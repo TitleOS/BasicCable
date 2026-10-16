@@ -8,7 +8,7 @@ import { DateTime } from 'luxon';
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'st-sched-'));
 process.env.TZ = 'America/New_York';
 const { store } = await import('../src/db.js');
-const { buildChannel, slotOccurrences, extendItem } = await import('../src/scheduler.js');
+const { buildChannel, slotOccurrences, extendItem, replaceItem, markUnplayable, isUnplayable } = await import('../src/scheduler.js');
 const { globToRegExp, parseRuntime, playableEpisodes } = await import('../src/metadata.js');
 
 const ZONE = 'America/New_York';
@@ -122,4 +122,41 @@ test('extendItem gives an upcoming item its real length and pushes the rest of t
   assert.equal(nextRow.video_id, before[before.indexOf(target) + 1].video_id);
   // Items already on air are never changed.
   if (onAir) assert.equal(await extendItem(ch.id, onAir.id, onAir.end + 10 * 60e3), false);
+});
+
+test('an unplayable upcoming episode is replaced by the next one in order, and the show carries on', async () => {
+  const ch = store.createChannel({ name: 'Skip', round_minutes: 5, fill_mode: 'sequential' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt002', name: 'Drama' });
+  await buildChannel(ch.id);
+  const now = Date.now();
+  const before = store.epgRange(ch.id, now, Infinity);
+  const target = before.find((r) => r.start > now);
+  markUnplayable(target.video_id);
+  assert.equal(await replaceItem(ch.id, target.id), true);
+  const after = store.epgRange(ch.id, 0, Infinity);
+  assertContiguous(after);
+  const swapped = after.find((r) => r.start === target.start);
+  assert.notEqual(swapped.video_id, target.video_id);
+  // Same slot, now the episode that would have come next, and the order continues from there.
+  assert.equal(swapped.video_id, before[before.indexOf(target) + 1].video_id);
+  assert.ok(!after.some((r) => r.start >= target.start && r.video_id === target.video_id), 'bad episode not rescheduled');
+});
+
+test('an unplayable episode that is already on air is cut off now and replaced immediately', async () => {
+  const ch = store.createChannel({ name: 'SkipNow', round_minutes: 5, fill_mode: 'random' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt002', name: 'Drama' });
+  await buildChannel(ch.id);
+  const now = Date.now();
+  const onAir = store.epgAt(ch.id, now);
+  markUnplayable(onAir.video_id);
+  assert.equal(await replaceItem(ch.id, onAir.id, { now }), true);
+  const cut = store.get('SELECT * FROM epg WHERE id = ?', onAir.id);
+  assert.equal(cut.end, now);
+  const replacement = store.epgAt(ch.id, now);
+  assert.equal(replacement.start, now);
+  assert.notEqual(replacement.video_id, onAir.video_id);
+  // Random mode never picks an unplayable episode again.
+  const later = store.epgRange(ch.id, now, Infinity);
+  assert.ok(!later.some((r) => r.video_id === onAir.video_id));
+  assert.ok(isUnplayable(onAir.video_id));
 });

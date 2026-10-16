@@ -126,6 +126,18 @@ Opening a channel then starts ffmpeg straight away. The log line for the program
 
 Preparing also reveals the file's real length. If it's more than a minute longer than its guide slot, the slot is stretched to fit (rounded up per channel), and the rest of the guide moves back. A Superfan episode in a 25-minute slot gets 30 or 35 minutes instead of being cut off. Only programs that haven't started yet are changed. If a stretched program runs into a time slot, that slot starts late by the same amount.
 
+### Episodes with nothing playable
+
+Sometimes no addon has a usable copy: every result is uncached, torrent-only or filtered out. When that happens, StreamTube puts something else in that spot, chosen by the channel's usual rules:
+
+- **In-order channels** play the next episode, and the show continues from there.
+- **Random channels** pick another random episode.
+- **Pools with several titles** may move on to a different show.
+
+An upcoming program is swapped before it airs. One already on air is cut off and the replacement starts straight away. The replacement is checked immediately too, so a run of missing episodes is skipped in one go. Tuning in does the same, even with prefetching off, so you get the next playable episode instead of a "couldn't play" screen.
+
+A skipped episode isn't scheduled again for 6 hours, after which it gets another chance, since debrid caches change. If no addon answers at all (an outage rather than a missing episode), nothing is skipped and StreamTube retries later.
+
 Lookups are spaced 3–30 seconds apart at random, so a batch of channels never hits your addons all at once and trips their rate limits. Tuning in never waits for this spacing. If a program isn't prepared yet, opening it looks it up immediately.
 
 The cost is one addon lookup and one file check per program, made even when nobody is watching. Set **Prepare streams ahead** to 0 to turn it off.

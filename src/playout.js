@@ -4,7 +4,7 @@ import { spawn, execFile } from 'node:child_process';
 import { config, log } from './config.js';
 import { store } from './db.js';
 import { headerArgs } from './probe.js';
-import { prepareStream, dropPrepared } from './prefetch.js';
+import { prepareStream, dropPrepared, skipUnplayable } from './prefetch.js';
 import { buildChannel, itemLabel } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
 
@@ -118,6 +118,7 @@ class ChannelRunner {
       const result = await this.playItem(item);
       if (this.stopped) break;
       if (result === 'done') { lastItem = item; continue; }
+      if (result === 'skipped') continue; // the guide now has a replacement at this spot
       fails++;
       if (result === 'retry' && fails <= 3) continue; // link dropped mid-item: rejoin at the live offset
       // Keep the channel alive with a slate, retrying every minute, giving up on the item after a few tries.
@@ -147,6 +148,8 @@ class ChannelRunner {
     let prep = await prepare();
     if (prep === undefined) return 'failed';
     if (!prep) {
+      // Nothing playable: put another episode in its place (by the channel's rules) and play that instead.
+      if (await skipUnplayable(item, channel)) return 'skipped';
       this.setStatus({ state: 'error', message: 'No cached debrid stream found' });
       return 'failed';
     }

@@ -5,7 +5,7 @@ import { store } from './db.js';
 import { log } from './config.js';
 import { findStreams, forgetStream } from './picker.js';
 import { probe } from './probe.js';
-import { extendItem, itemLabel } from './scheduler.js';
+import { extendItem, replaceItem, markUnplayable, itemLabel } from './scheduler.js';
 
 const READY_MS = 2 * 3600 * 1000; // debrid links stay valid for hours; re-check after this
 const RETRY_MS = 5 * 60 * 1000; // after finding nothing playable, wait before asking the addons again
@@ -97,6 +97,22 @@ export const staggerDelay = (rand = Math.random()) => Math.round(STAGGER_MIN_MS 
 let nextLookupAt = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * No addon has a playable stream for this item: put something else in its place, picked by the channel's
+ * usual rules (next episode in order, a random one, another title...). Returns the replacement or null.
+ */
+export async function skipUnplayable(item, channel) {
+  markUnplayable(item.video_id);
+  const now = Date.now();
+  if (!(await replaceItem(channel.id, item.id, { now }))) return null;
+  const replacement = item.start > now
+    ? store.get('SELECT * FROM epg WHERE channel_id = ? AND start = ?', channel.id, item.start)
+    : store.epgAt(channel.id, now);
+  log.info(`channel ${channel.number}: no playable stream for ${itemLabel(item)}, ` +
+    (replacement ? `${item.start > now ? 'scheduled' : 'switched to'} ${itemLabel(replacement)} instead` : 'and nothing else to put in its place'));
+  return replacement;
+}
+
 let busy = false;
 
 /** Every minute, prepare whatever is on now or starts within the lead time, on every enabled channel. */
@@ -110,29 +126,35 @@ async function tick() {
     for (const channel of store.listChannels().filter((c) => c.enabled)) {
       const items = store.all('SELECT * FROM epg WHERE channel_id = ? AND end > ? AND start <= ? ORDER BY start', channel.id, now, now + lead);
       for (const listed of items) {
-        if (fresh(ready.get(keyOf(listed, channel)))) continue;
-        const wait = nextLookupAt - Date.now();
-        if (wait > 0) await sleep(wait);
-        // While we waited, a viewer may have prepared it, or the guide may have been replanned.
-        const item = store.get('SELECT * FROM epg WHERE id = ?', listed.id);
-        if (!item || item.end <= Date.now() || fresh(ready.get(keyOf(item, channel)))) continue;
-        const t0 = Date.now();
-        let prep = null;
-        try {
-          prep = await prepareStream(item, channel);
-        } catch (e) {
-          log.warn(`prefetch: channel ${channel.number}: ${e.message}`);
-          continue;
-        } finally {
-          nextLookupAt = Date.now() + staggerDelay();
+        // Follow replacements: when an item has nothing playable, check what took its place right away
+        // (after the usual spacing), so a run of bad episodes is skipped in one pass.
+        let id = listed.id;
+        for (let tries = 0; id && tries < 6; tries++) {
+          if (fresh(ready.get(keyOf(listed, channel))) && tries === 0) break;
+          const wait = nextLookupAt - Date.now();
+          if (wait > 0) await sleep(wait);
+          // While we waited, a viewer may have prepared it, or the guide may have been replanned.
+          const item = store.get('SELECT * FROM epg WHERE id = ?', id);
+          if (!item || item.end <= Date.now() || fresh(ready.get(keyOf(item, channel)))) break;
+          const t0 = Date.now();
+          let prep = null;
+          try {
+            prep = await prepareStream(item, channel);
+          } catch (e) {
+            log.warn(`prefetch: channel ${channel.number}: ${e.message}`);
+            break;
+          } finally {
+            nextLookupAt = Date.now() + staggerDelay();
+          }
+          if (!prep) {
+            id = (await skipUnplayable(item, channel))?.id;
+            continue;
+          }
+          log.info(`prefetch: channel ${channel.number}: ${itemLabel(item)} ready in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
+            `(${prep.info.video?.height || '?'}p, ${prep.info.duration ? Math.round(prep.info.duration / 60) + ' min' : 'unknown length'})`);
+          await fitGuideToFile(item, channel, prep.info);
+          break;
         }
-        if (!prep) {
-          log.info(`prefetch: channel ${channel.number}: nothing playable for ${itemLabel(item)}`);
-          continue;
-        }
-        log.info(`prefetch: channel ${channel.number}: ${itemLabel(item)} ready in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
-          `(${prep.info.video?.height || '?'}p, ${prep.info.duration ? Math.round(prep.info.duration / 60) + ' min' : 'unknown length'})`);
-        await fitGuideToFile(item, channel, prep.info);
       }
     }
   } catch (e) {

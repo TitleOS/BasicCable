@@ -110,6 +110,11 @@ export async function findStreams(item, channel, { fresh = false } = {}) {
   const addons = store.getSettings().streamAddons || [];
   if (!addons.length) throw new Error('No stream addons configured. Add your debrid-enabled addon URL in Settings.');
   const results = await Promise.allSettled(addons.map((a) => fetchStreams(a, item.type, item.video_id)));
+  // If no addon answered at all, that's an outage, not "nothing available": don't cache it, and let
+  // callers retry instead of skipping the episode.
+  if (results.every((r) => r.status === 'rejected')) {
+    throw new Error(`No stream addon answered for ${item.video_id}: ${results[0].reason?.message || 'unknown error'}`);
+  }
   const streams = [];
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') streams.push(...r.value);

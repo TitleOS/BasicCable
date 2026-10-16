@@ -92,6 +92,21 @@ export function slotOccurrences(slots, from, to, zone) {
 // ---------------------------------------------------------------------------
 // Pickers: decide what plays next from a pool of titles
 
+// Episodes/movies no stream addon could play recently. The planner steps over them; they get another
+// chance once the entry expires (debrid caches change).
+const UNPLAYABLE_MS = 6 * HOUR;
+const unplayable = new Map(); // video id -> expiry
+
+export function markUnplayable(videoId, ms = UNPLAYABLE_MS) {
+  unplayable.set(videoId, Date.now() + ms);
+}
+
+export function isUnplayable(videoId) {
+  const until = unplayable.get(videoId);
+  if (until && until < Date.now()) unplayable.delete(videoId);
+  return !!until && until >= Date.now();
+}
+
 function roundUp(minutes, step) {
   if (!step || step <= 1) return minutes;
   return Math.ceil(minutes / step) * step;
@@ -119,21 +134,32 @@ class Planner {
     return roundUp(entry.runtime, this.channel.round_minutes) * MIN;
   }
 
-  /** Next episode of a show according to its per-channel cursor (wraps around at the end). */
+  /**
+   * Next episode of a show according to its per-channel cursor (wraps around at the end), stepping over
+   * episodes with no playable stream. Null when none of the show's episodes can be played right now.
+   */
   nextEpisode(entry, order) {
     const eps = entry.episodes;
-    if (order === 'random') return eps[Math.floor(Math.random() * eps.length)];
+    if (order === 'random') {
+      const ok = eps.filter((e) => !isUnplayable(e.id));
+      return ok.length ? ok[Math.floor(Math.random() * ok.length)] : null;
+    }
     const last = this.cursors[`ep:${entry.id}`];
     const idx = last ? eps.findIndex((e) => e.id === last) : -1;
-    return eps[(idx + 1) % eps.length];
+    for (let i = 1; i <= eps.length; i++) {
+      const ep = eps[(idx + i) % eps.length];
+      if (!isUnplayable(ep.id)) return ep;
+    }
+    return null;
   }
 
-  /** Candidate item for a title, without committing cursors. */
+  /** Candidate item for a title, without committing cursors. Null if nothing of it is playable. */
   candidate(entry, order) {
     if (entry.type === 'series') {
       const ep = this.nextEpisode(entry, order);
-      return { entry, video: ep, duration: this.durationOf(entry) };
+      return ep ? { entry, video: ep, duration: this.durationOf(entry) } : null;
     }
+    if (isUnplayable(entry.id)) return null;
     return { entry, video: null, duration: this.durationOf(entry) };
   }
 
@@ -163,7 +189,8 @@ class Planner {
         .map((x) => x.e);
     }
     const order = mode === 'random' ? 'random' : 'sequential';
-    const cands = ordered.map((e) => this.candidate(e, order));
+    const cands = ordered.map((e) => this.candidate(e, order)).filter(Boolean);
+    if (!cands.length) return null;
     // Prefer the first title that fits the time left; otherwise the shortest one.
     return cands.find((c) => c.duration <= remaining) || cands.sort((a, b) => a.duration - b.duration)[0];
   }
@@ -253,7 +280,16 @@ export function extendItem(channelId, itemId, newEnd) {
   return buildChannel(channelId, { rebuild: true, extend: { id: Number(itemId), end: newEnd } });
 }
 
-async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = null } = {}) {
+/**
+ * Swap a guide item for something else, chosen by the channel's usual rules (mark its video unplayable
+ * first so it isn't picked again). An upcoming item is replaced outright; one already on air is cut off now
+ * and the replacement starts immediately. Returns false if the item is gone or already over.
+ */
+export function replaceItem(channelId, itemId, { now = Date.now() } = {}) {
+  return buildChannel(channelId, { rebuild: true, now, replace: { id: Number(itemId) } });
+}
+
+async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = null, replace = null } = {}) {
   const channel = store.getChannel(channelId);
   if (!channel) return;
   const zone = store.getSettings().timezone || config.timezone;
@@ -282,6 +318,19 @@ async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = 
       cutoff = row.start;
       store.run('UPDATE epg SET end = ?, truncated = 0 WHERE id = ?', extend.end, row.id);
     }
+    let resumeAt = null;
+    if (replace) {
+      const row = store.get('SELECT * FROM epg WHERE id = ? AND channel_id = ?', replace.id, channelId);
+      if (!row || row.end <= now) return false;
+      if (row.start > now) {
+        cutoff = row.start - 1; // drop the item itself and plan again from its start
+        resumeAt = row.start;
+      } else {
+        store.run('UPDATE epg SET end = ?, truncated = 1 WHERE id = ?', now, row.id);
+        cutoff = row.start;
+        resumeAt = now;
+      }
+    }
     if (rebuild) {
       // Keep whatever is on air right now; rewind cursors moved by the rows we drop.
       const dropped = store.all('SELECT * FROM epg WHERE channel_id = ? AND start > ? ORDER BY start', channelId, cutoff);
@@ -298,14 +347,15 @@ async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = 
 
     const last = store.epgLast(channelId);
     let t;
-    if (last && last.end > now) t = last.end;
+    if (resumeAt != null) t = resumeAt;
+    else if (last && last.end > now) t = last.end;
     else t = DateTime.fromMillis(now, { zone }).startOf('hour').plus({ minutes: DateTime.fromMillis(now, { zone }).minute >= 30 ? 30 : 0 }).toMillis();
     if (t >= horizon) return true;
 
     const recent = store.recentEpg(channelId, 20).map((r) => r.meta_id);
     const planner = new Planner(channel, lib, store.getCursors(channelId), recent);
     const lastSaved = store.epgLast(channelId);
-    if (lastSaved && lastSaved.end === t) planner.prevSaved = { ...lastSaved };
+    if (lastSaved && lastSaved.end === t && !isUnplayable(lastSaved.video_id)) planner.prevSaved = { ...lastSaved };
     const occs = slotOccurrences(slots, t, horizon, zone);
     const poolMode = channel.fill_mode;
 

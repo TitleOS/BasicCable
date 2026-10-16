@@ -8,6 +8,8 @@ const file = process.env.SAMPLE_FILE;
 const port = Number(process.env.MOCK_PORT || 7099);
 // Real debrid addons take a few seconds to answer; MOCK_DELAY_MS imitates that.
 const delay = Number(process.env.MOCK_DELAY_MS || 0);
+// Video ids (comma separated) that only get unusable results: uncached or torrent-only.
+const unplayable = new Set((process.env.MOCK_UNPLAYABLE || '').split(',').map((s) => s.trim()).filter(Boolean));
 if (!file || !fs.existsSync(file)) {
   console.error('Set SAMPLE_FILE to a video file');
   process.exit(1);
@@ -33,7 +35,7 @@ http.createServer((req, res) => {
     ];
     return setTimeout(() => {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ streams }));
+      res.end(JSON.stringify({ streams: unplayable.has(id) ? streams.slice(0, 2) : streams }));
     }, delay);
   }
   if (url.pathname === '/video.mkv') {
