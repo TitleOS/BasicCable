@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import { store } from './db.js';
-import { send, baseUrl, HttpError } from './http.js';
+import { send, baseUrl, clientIp, HttpError } from './http.js';
 import { itemLabel } from './scheduler.js';
-import { getRunner, peekRunner } from './playout.js';
+import { getRunner, peekRunner, tuneIn, mayWatch } from './playout.js';
 import { findStreams } from './picker.js';
 
 const PREFIX = 'streamtube:';
@@ -120,50 +120,64 @@ export function registerAddon(router) {
   });
 
   // --- live HLS
+  // index.m3u8 is the one "tune in" request: it is always a master playlist, so players refresh video.m3u8
+  // afterwards. Everything else checks that this viewer hasn't since tuned in to another channel.
   const M3U8 = { 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-cache, no-store' };
-  const liveRunner = async (id) => {
+  const watching = (req, id) => {
+    const ip = clientIp(req);
+    if (!mayWatch(ip, id)) throw new HttpError(409, 'This device is now watching another channel');
+    return ip;
+  };
+  const liveRunner = async (id, ip) => {
     const channel = store.getChannel(id);
     if (!channel || !channel.enabled) throw new HttpError(404, 'No such channel');
     const runner = await getRunner(channel.id);
+    runner.touch(ip);
     const ok = await runner.waitReady();
     if (!ok) throw new HttpError(503, runner.status.message || 'Channel is still tuning, try again');
     return { channel, runner };
   };
 
-  // With subtitles on, index.m3u8 is a master playlist with an English caption track (filled whenever the
-  // current program has a text subtitle); otherwise it is the plain video playlist, as before.
   router.get('/live/:id/index.m3u8', async (req, res, { id }) => {
-    const { channel, runner } = await liveRunner(id);
-    if ((channel.options?.subtitles || 'auto') === 'off') return send(res, 200, runner.playlist(), M3U8);
+    const channel = store.getChannel(id);
+    if (!channel || !channel.enabled) throw new HttpError(404, 'No such channel');
+    const ip = clientIp(req);
+    await getRunner(channel.id);
+    tuneIn(ip, channel.id);
+    await liveRunner(channel.id, ip);
+    // With subtitles on, an English caption track (filled whenever the current program has a text subtitle).
+    const subs = (channel.options?.subtitles || 'auto') !== 'off';
     send(res, 200, [
       '#EXTM3U',
       '#EXT-X-VERSION:3',
-      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subs.m3u8"',
-      '#EXT-X-STREAM-INF:BANDWIDTH=8000000,SUBTITLES="subs"',
+      subs ? '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subs.m3u8"' : null,
+      `#EXT-X-STREAM-INF:BANDWIDTH=8000000${subs ? ',SUBTITLES="subs"' : ''}`,
       'video.m3u8',
       '',
-    ].join('\n'), M3U8);
+    ].filter((l) => l !== null).join('\n'), M3U8);
   });
   router.get('/live/:id/video.m3u8', async (req, res, { id }) => {
-    const { runner } = await liveRunner(id);
+    const { runner } = await liveRunner(id, watching(req, id));
     send(res, 200, runner.playlist('video'), M3U8);
   });
   router.get('/live/:id/subs.m3u8', async (req, res, { id }) => {
-    const { runner } = await liveRunner(id);
+    const { runner } = await liveRunner(id, watching(req, id));
     send(res, 200, runner.playlist('subs'), M3U8);
   });
   router.get('/live/:id/sub/:name', async (req, res, { id, name }) => {
+    const ip = watching(req, id);
     const runner = peekRunner(id);
     if (!runner) throw new HttpError(404, 'Channel not running');
-    runner.touch();
+    runner.touch(ip);
     send(res, 200, await runner.subtitleSegment(name), { 'content-type': 'text/vtt; charset=utf-8', 'cache-control': 'max-age=60' });
   });
 
   router.get('/live/:id/:segment', (req, res, { id, segment }) => {
+    const ip = watching(req, id);
     const runner = peekRunner(id);
     const file = runner?.segmentPath(segment);
     if (!file) throw new HttpError(404, 'Segment gone');
-    runner.touch();
+    runner.touch(ip);
     let stat;
     try { stat = fs.statSync(file); } catch { throw new HttpError(404, 'Segment gone'); }
     res.writeHead(200, { 'content-type': 'video/mp2t', 'content-length': stat.size, 'access-control-allow-origin': '*', 'cache-control': 'max-age=60' });

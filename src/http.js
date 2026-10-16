@@ -44,12 +44,12 @@ export function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
-export async function readJson(req) {
+export async function readJson(req, maxBytes = 1024 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const c of req) {
     size += c.length;
-    if (size > 1024 * 1024) throw new HttpError(413, 'Body too large');
+    if (size > maxBytes) throw new HttpError(413, 'Body too large');
     chunks.push(c);
   }
   if (!chunks.length) return {};
@@ -67,6 +67,12 @@ export function baseUrl(req) {
   const proto = (req.headers['x-forwarded-proto'] || '').split(',')[0] || (req.socket.encrypted ? 'https' : 'http');
   const host = (req.headers['x-forwarded-host'] || req.headers.host || `localhost:${config.port}`).split(',')[0];
   return `${proto}://${host}`;
+}
+
+/** The viewer's IP. Behind a reverse proxy, set TRUST_PROXY=1 so X-Forwarded-For is used instead of the proxy's IP. */
+export function clientIp(req) {
+  const fwd = config.trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return (fwd || req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 }
 
 export function checkAuth(req) {

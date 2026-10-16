@@ -1,5 +1,5 @@
 import { store } from './db.js';
-import { config } from './config.js';
+import { config, log } from './config.js';
 import { send, readJson, baseUrl, HttpError } from './http.js';
 import { search, expandWildcard, fetchJson } from './metadata.js';
 import { buildChannel, resolveWildcard, itemLabel } from './scheduler.js';
@@ -82,8 +82,126 @@ async function rebuild(channelId) {
   await buildChannel(channelId, { rebuild: true });
 }
 
+/** Validate and save a settings patch (from the Settings page or a restored backup). */
+async function applySettings(b) {
+  const patch = {};
+  if (b.streamAddons !== undefined) {
+    patch.streamAddons = (Array.isArray(b.streamAddons) ? b.streamAddons : String(b.streamAddons).split('\n'))
+      .map((s) => String(s).trim()).filter(Boolean)
+      .map((u) => u.replace(/^stremio:\/\//i, 'https://'));
+  }
+  if (b.metaAddon !== undefined) patch.metaAddon = addonBase(String(b.metaAddon || 'https://v3-cinemeta.strem.io'));
+  if (b.timezone !== undefined) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: b.timezone });
+    } catch {
+      throw new HttpError(400, `Unknown timezone "${b.timezone}"`);
+    }
+    patch.timezone = b.timezone;
+  }
+  if (b.publicUrl !== undefined) patch.publicUrl = String(b.publicUrl).trim().replace(/\/+$/, '');
+  if (b.defaultResolution !== undefined) patch.defaultResolution = Number(b.defaultResolution) || 1080;
+  if (b.oneStreamPerIp !== undefined) patch.oneStreamPerIp = !!b.oneStreamPerIp;
+  const before = store.getSettings();
+  const after = store.saveSettings(patch);
+  if (patch.timezone && patch.timezone !== before.timezone) {
+    for (const c of store.listChannels()) await rebuild(c.id);
+  }
+  return after;
+}
+
 function channelDetail(c) {
   return { ...c, sources: store.listSources(c.id), slots: store.listSlots(c.id) };
+}
+
+// ---------------------------------------------------------------------------
+// Backup / restore
+
+const BACKUP_VERSION = 1;
+const SETTINGS_KEYS = ['streamAddons', 'metaAddon', 'timezone', 'publicUrl', 'defaultResolution', 'oneStreamPerIp'];
+
+/**
+ * Where each show is right now, so episodes continue in order on the new install. The stored cursors already
+ * include the guide planned ahead, so rewind them past future rows the same way a guide rebuild does.
+ */
+function progressNow(channelId) {
+  const cursors = store.getCursors(channelId);
+  const seen = new Set();
+  for (const r of store.all('SELECT cursor_prev FROM epg WHERE channel_id = ? AND start > ? ORDER BY start', channelId, Date.now())) {
+    for (const [k, v] of Object.entries(r.cursor_prev)) {
+      if (seen.has(k)) continue;
+      seen.add(k);
+      if (v === null) delete cursors[k];
+      else cursors[k] = v;
+    }
+  }
+  return Object.fromEntries(Object.entries(cursors).filter(([k]) => k.startsWith('ep:')));
+}
+
+/** Channels with their pool, slots and per-show episode progress. Settings only on request (they hold debrid keys). */
+function exportBackup({ includeSettings = false } = {}) {
+  const channels = store.listChannels().map((c) => ({
+    number: c.number, name: c.name, logo: c.logo, resolution: c.resolution, fallback: c.fallback,
+    fill_mode: c.fill_mode, round_minutes: c.round_minutes, enabled: !!c.enabled, options: c.options,
+    sources: store.listSources(c.id).map((s) => ({
+      kind: s.kind, ref: s.ref, name: s.name, poster: s.poster,
+      // Wildcard matches are re-resolved on import; only the user's choices travel.
+      options: s.kind === 'wildcard' ? { types: s.options.types, excluded: s.options.excluded || [] } : {},
+    })),
+    slots: store.listSlots(c.id).map((s) => ({ days: s.days, start: s.start, minutes: s.minutes, content: s.content, play_order: s.play_order })),
+    progress: progressNow(c.id),
+  }));
+  const out = { app: 'streamtube', version: BACKUP_VERSION, exportedAt: new Date().toISOString(), channels };
+  if (includeSettings) {
+    const s = store.getSettings();
+    out.settings = Object.fromEntries(SETTINGS_KEYS.map((k) => [k, s[k]]));
+  }
+  return out;
+}
+
+/** Validate a whole backup before touching the database, then create everything in one transaction. */
+async function importBackup(data, { replace = false, includeSettings = false } = {}) {
+  if (!data || data.app !== 'streamtube' || !Array.isArray(data.channels)) throw new HttpError(400, "That file isn't a StreamTube backup");
+  if (data.version > BACKUP_VERSION) throw new HttpError(400, 'This backup comes from a newer StreamTube version');
+
+  const planned = data.channels.map((c, i) => {
+    try {
+      const sources = (c.sources || []).map((s) => {
+        const src = contentInput(s);
+        if (src.kind === 'pool') throw new HttpError(400, 'pool is not a valid pool entry');
+        if (src.kind === 'wildcard') src.options = { ...src.options, excluded: (s.options?.excluded || []).map(String) };
+        return src;
+      });
+      const progress = Object.entries(c.progress || {}).filter(([k, v]) => /^ep:[\w:.-]+$/.test(k) && typeof v === 'string');
+      return { channel: channelInput({ options: {}, ...c }), sources, slots: (c.slots || []).map(slotInput), progress };
+    } catch (e) {
+      throw new HttpError(400, `Channel ${i + 1} (${c?.name || 'unnamed'}): ${e.message}`);
+    }
+  });
+
+  if (replace) for (const c of store.listChannels()) stopRunner(c.id);
+  const created = store.tx(() => {
+    if (replace) store.run('DELETE FROM channels');
+    const taken = new Set(store.listChannels().map((c) => c.number));
+    return planned.map(({ channel, sources, slots, progress }) => {
+      // Keep the backed-up channel number unless it's already in use here.
+      let number = channel.number || 1;
+      while (taken.has(number)) number++;
+      taken.add(number);
+      const ch = store.createChannel({ ...channel, number });
+      for (const s of sources) store.addSource(ch.id, s);
+      for (const s of slots) store.addSlot(ch.id, s);
+      for (const [k, v] of progress) store.run('INSERT INTO cursors(channel_id, key, value) VALUES (?, ?, ?)', ch.id, k, v);
+      return ch;
+    });
+  });
+
+  if (includeSettings && data.settings) await applySettings(data.settings);
+  // Guides need metadata lookups; build them in the background.
+  (async () => {
+    for (const ch of created) await buildChannel(ch.id).catch((e) => log.error(`guide build after import failed for ${ch.name}:`, e));
+  })();
+  return { imported: created.length, replaced: replace, settings: !!(includeSettings && data.settings) };
 }
 
 export function registerApi(router) {
@@ -107,30 +225,7 @@ export function registerApi(router) {
   // --- settings
   router.get('/api/settings', (req, res) => send(res, 200, store.getSettings()), A);
   router.put('/api/settings', async (req, res) => {
-    const b = await readJson(req);
-    const patch = {};
-    if (b.streamAddons !== undefined) {
-      patch.streamAddons = (Array.isArray(b.streamAddons) ? b.streamAddons : String(b.streamAddons).split('\n'))
-        .map((s) => String(s).trim()).filter(Boolean)
-        .map((u) => u.replace(/^stremio:\/\//i, 'https://'));
-    }
-    if (b.metaAddon !== undefined) patch.metaAddon = addonBase(String(b.metaAddon || 'https://v3-cinemeta.strem.io'));
-    if (b.timezone !== undefined) {
-      try {
-        new Intl.DateTimeFormat('en-US', { timeZone: b.timezone });
-      } catch {
-        throw new HttpError(400, `Unknown timezone "${b.timezone}"`);
-      }
-      patch.timezone = b.timezone;
-    }
-    if (b.publicUrl !== undefined) patch.publicUrl = String(b.publicUrl).trim().replace(/\/+$/, '');
-    if (b.defaultResolution !== undefined) patch.defaultResolution = Number(b.defaultResolution) || 1080;
-    const before = store.getSettings();
-    const after = store.saveSettings(patch);
-    if (patch.timezone && patch.timezone !== before.timezone) {
-      for (const c of store.listChannels()) await rebuild(c.id);
-    }
-    send(res, 200, after);
+    send(res, 200, await applySettings(await readJson(req)));
   }, A);
 
   // Try a stream addon against a well-known episode and report what the picker would accept.
@@ -305,4 +400,18 @@ export function registerApi(router) {
   }, A);
 
   router.get('/api/status', (req, res) => send(res, 200, { runners: runnerStatus() }), A);
+
+  // --- backup / restore
+  router.get('/api/backup', (req, res) => {
+    const includeSettings = new URL(req.url, 'http://x').searchParams.get('settings') === '1';
+    const date = new Date().toISOString().slice(0, 10);
+    send(res, 200, JSON.stringify(exportBackup({ includeSettings }), null, 2), {
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': `attachment; filename="streamtube-backup-${date}.json"`,
+    });
+  }, A);
+  router.post('/api/restore', async (req, res) => {
+    const b = await readJson(req, 20 * 1024 * 1024);
+    send(res, 200, await importBackup(b.backup, { replace: !!b.replace, includeSettings: !!b.includeSettings }));
+  }, A);
 }

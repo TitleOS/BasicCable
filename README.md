@@ -9,6 +9,8 @@ You build channels in a web UI that runs in a container on your network. Each ch
 - **Wildcards.** `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. You can untick any match. New titles that match are picked up each day.
 - **English subtitles.** StreamTube looks for an English SDH track in the file, then the first English or unlabelled one. Text subtitles become a selectable caption track. Image subtitles (Blu-ray PGS) are burned into the picture. See [Subtitles](#subtitles).
 - **Target resolution per channel.** The picker uses the exact resolution when it can. Otherwise it takes the next best: by default the nearest lower one, or optionally the nearest higher one. It only uses cached, direct debrid links, and it skips CAM/TS releases, Dolby Vision-only files (optional) and any keywords you list.
+- **Backup and restore.** Export your channels, pools, wildcards, slots and each show's progress as one JSON file, and import it into another install. See [Backup and restore](#backup-and-restore).
+- **One stream per device.** Each viewer IP watches one channel at a time, so channel surfing doesn't leave old channels running. See [Stream cap](#stream-cap).
 - **Live guide.** The web UI shows a ticking clock, a now-playing strip with progress bars and an EPG grid. Click any program to see which stream it would pick.
 - **Other players.** Besides the Stremio addon you get an M3U playlist and an XMLTV guide for VLC, Kodi, TiviMate, Jellyfin, Plex and similar apps.
 
@@ -58,6 +60,7 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 | `HLS_DIR` | `/tmp/streamtube-hls` | Live segments, about 30 per active channel. tmpfs works well here. |
 | `GUIDE_HOURS` | `48` | How far ahead the guide is planned. |
 | `IDLE_SECONDS` | `60` | How long a channel keeps running after its last viewer leaves. |
+| `TRUST_PROXY` | *(off)* | Set to `1` when StreamTube sits behind your own reverse proxy, so viewer IPs are read from `X-Forwarded-For`. Without it, every viewer looks like the proxy. |
 | `SUBTITLE_BURN_PRESET` | `veryfast` | x264 preset used when burning in image subtitles. Faster presets use less CPU but give lower quality. |
 
 ## Scheduling details
@@ -87,6 +90,40 @@ How the track reaches the player depends on its format and the channel's **Engli
 - **Burning in** means re-encoding the video with x264. Expect real 1080p content to keep a few CPU cores busy per channel. 4K sources are scaled to 1080p first. Lower `SUBTITLE_BURN_PRESET` (for example `superfast` or `ultrafast`) if a channel can't keep up. Set the channel to **Selectable track only** to never re-encode.
 - Subtitle files that sit next to the video in a torrent can't be used. Debrid links point at the video file alone.
 - Subtitles need ffmpeg 7.x. ffmpeg 8.0's real-time pacing slows to about half speed when a subtitle stream is included, so on 8.x StreamTube plays without subtitles and logs a warning. The Docker image ships 7.1.
+
+## Backup and restore
+
+**Settings → Backup & restore** downloads a `streamtube-backup-<date>.json` file. It holds:
+
+- Every channel and its options.
+- The auto-fill pool, including wildcards and any matches you unticked.
+- Time slots.
+- Where each show has got to.
+
+Settings are left out unless you tick **Include settings**, because they contain your debrid addon URLs and keys.
+
+To restore, choose the file on another install (or the same one) and click **Import**:
+
+- **Imported channels are added** next to existing ones. If a channel number is already in use, the channel gets the next free number.
+- **Replace existing channels** deletes the current channels first.
+- **Also restore settings from the file** applies the settings, if the backup has them.
+
+Guides are rebuilt in the background after an import. A bad file is rejected before anything changes, with a message naming the channel at fault.
+
+The same thing is available from the API: `GET /api/backup` (add `?settings=1` to include settings) and `POST /api/restore` with `{"backup": <file contents>, "replace": false, "includeSettings": false}`.
+
+## Stream cap
+
+With **One stream per viewer IP** on (Settings, on by default), each device watches one channel at a time:
+
+- Opening a channel releases the one that device was watching before.
+- If nobody else is on that old channel, it stops straight away, along with its ffmpeg process and debrid connection. Otherwise it would keep running for a minute after you leave.
+- If an old player keeps asking for the channel you left, it gets an error instead of restarting it.
+- Other devices are unaffected. Two TVs can watch two channels, or the same one.
+
+The cap covers the live channel streams. **Start over** links go straight to your debrid service, so StreamTube doesn't see them.
+
+If StreamTube is behind a reverse proxy, set `TRUST_PROXY=1`. Otherwise every viewer shares the proxy's IP and counts as one device.
 
 ## Outputs
 

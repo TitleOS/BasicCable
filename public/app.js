@@ -478,6 +478,7 @@ async function viewSettings() {
   const tzlist = h('datalist', { id: 'tzlist' }, (Intl.supportedValuesOf?.('timeZone') || []).map((z) => h('option', { value: z })));
   const pub = h('input', { type: 'url', value: s.publicUrl, placeholder: `${location.origin}`, style: { width: '100%' } });
   const res = h('select', {}, [2160, 1440, 1080, 720, 576, 480].map((r) => h('option', { value: r, selected: r === s.defaultResolution }, `${r}p`)));
+  const oneStream = h('input', { type: 'checkbox', checked: s.oneStreamPerIp !== false });
   const testOut = h('div', {});
   const test = (btn) => busy(btn, async () => {
     const urls = addons.value.split('\n').map((x) => x.trim()).filter(Boolean);
@@ -498,7 +499,7 @@ async function viewSettings() {
     }
   });
   const save = (btn) => busy(btn, async () => {
-    await api('/api/settings', { method: 'PUT', body: { streamAddons: addons.value, metaAddon: meta.value, timezone: tz.value, publicUrl: pub.value, defaultResolution: Number(res.value) } });
+    await api('/api/settings', { method: 'PUT', body: { streamAddons: addons.value, metaAddon: meta.value, timezone: tz.value, publicUrl: pub.value, defaultResolution: Number(res.value), oneStreamPerIp: oneStream.checked } });
     state.info = await api('/api/info');
     state.tz = state.info.timezone;
     toast('Settings saved');
@@ -520,8 +521,56 @@ async function viewSettings() {
       h('label', { class: 'field', style: { marginTop: '12px' } }, 'Public URL of this server (optional)', pub,
         h('span', { class: 'hint' }, 'Leave empty to use whatever address Stremio used to install the addon. Set it if you use a reverse proxy.')),
       h('label', { class: 'field', style: { marginTop: '12px' } }, 'Metadata addon', meta,
-        h('span', { class: 'hint' }, 'Used for search, episode lists and runtimes. Cinemeta is what Stremio itself uses.'))),
-    h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { class: 'btn primary', onclick: (e) => save(e.currentTarget) }, 'Save settings')));
+        h('span', { class: 'hint' }, 'Used for search, episode lists and runtimes. Cinemeta is what Stremio itself uses.')),
+      h('label', { class: 'check', style: { marginTop: '14px' } }, oneStream, 'One stream per viewer IP'),
+      h('p', { class: 'hint' }, 'Each device watches one channel at a time. Switching channels releases the previous one right away, and stops it if nobody else is watching, instead of leaving it running for a minute.')),
+    h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { class: 'btn primary', onclick: (e) => save(e.currentTarget) }, 'Save settings')),
+    backupPanel());
+}
+
+function backupPanel() {
+  const withSettings = h('input', { type: 'checkbox' });
+  const file = h('input', { type: 'file', accept: '.json,application/json' });
+  const replace = h('input', { type: 'checkbox' });
+  const importSettings = h('input', { type: 'checkbox' });
+  const preview = h('div', { class: 'hint' });
+  let backup = null;
+  file.addEventListener('change', async () => {
+    backup = null;
+    preview.textContent = '';
+    const f = file.files[0];
+    if (!f) return;
+    try {
+      backup = JSON.parse(await f.text());
+      if (backup.app !== 'streamtube' || !Array.isArray(backup.channels)) throw new Error("That file isn't a StreamTube backup");
+      preview.textContent = `${backup.channels.length} channel${backup.channels.length === 1 ? '' : 's'}: ${backup.channels.map((c) => c.name).join(', ')}` +
+        (backup.settings ? ' · includes settings' : '');
+    } catch (e) {
+      backup = null;
+      preview.textContent = e.message;
+    }
+  });
+  const restore = (btn) => busy(btn, async () => {
+    if (!backup) return toast('Choose a backup file first', true);
+    if (replace.checked && !confirm('Replace every channel on this install with the ones in the backup?')) return;
+    const r = await api('/api/restore', { method: 'POST', body: { backup, replace: replace.checked, includeSettings: importSettings.checked } });
+    toast(`Imported ${r.imported} channel${r.imported === 1 ? '' : 's'}${r.settings ? ' and settings' : ''}; guides are being built`);
+  });
+  const download = () => { location.href = `/api/backup${withSettings.checked ? '?settings=1' : ''}`; };
+  return h('div', { class: 'panel', style: { marginTop: '16px' } },
+    h('h2', {}, 'Backup & restore'),
+    h('p', { class: 'hint', style: { marginTop: '-6px', marginBottom: '12px' } },
+      'Channels, auto-fill pools, wildcards, time slots and where each show left off, as one JSON file you can import into another StreamTube.'),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn', onclick: download }, 'Download backup'),
+      h('label', { class: 'check' }, withSettings, 'Include settings (contains your debrid addon URLs and keys)')),
+    h('div', { class: 'row', style: { marginTop: '16px' } }, file),
+    preview,
+    h('div', { class: 'row', style: { marginTop: '10px' } },
+      h('label', { class: 'check' }, replace, 'Replace existing channels'),
+      h('label', { class: 'check' }, importSettings, 'Also restore settings from the file'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', onclick: (e) => restore(e.currentTarget) }, 'Import')));
 }
 
 // ---------------------------------------------------------------- connect

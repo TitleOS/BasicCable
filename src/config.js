@@ -14,6 +14,8 @@ export const config = {
   ffmpeg: env.FFMPEG_PATH || 'ffmpeg',
   ffprobe: env.FFPROBE_PATH || 'ffprobe',
   adminPassword: env.ADMIN_PASSWORD || '',
+  // Use X-Forwarded-For for viewer IPs (only when StreamTube sits behind your own reverse proxy).
+  trustProxy: /^(1|true|yes)$/i.test(env.TRUST_PROXY || ''),
   timezone: env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   // How far ahead the guide is materialized.
   horizonHours: Number(env.GUIDE_HOURS || 48),

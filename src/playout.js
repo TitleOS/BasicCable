@@ -100,6 +100,7 @@ class ChannelRunner {
     this.nextSeq = 0;
     this.program = 0;
     this.lastAccess = Date.now();
+    this.viewers = new Map(); // viewer ip -> last request time
     this.stopped = false;
     this.proc = null;
     this.status = { state: 'starting', item: null, stream: null, since: Date.now(), message: '' };
@@ -107,7 +108,15 @@ class ChannelRunner {
     this.loop = this.run().catch((e) => log.error(`runner ${this.channelId} crashed:`, e));
   }
 
-  touch() { this.lastAccess = Date.now(); }
+  touch(ip) {
+    this.lastAccess = Date.now();
+    if (ip) this.viewers.set(ip, this.lastAccess);
+  }
+
+  activeViewers() {
+    const cutoff = Date.now() - config.idleSeconds * 1000;
+    return [...this.viewers].filter(([, t]) => t > cutoff).map(([ip]) => ip);
+  }
 
   stop() {
     this.stopped = true;
@@ -428,7 +437,35 @@ export function stopRunner(channelId) {
 }
 
 export function runnerStatus() {
-  return [...runners.values()].map((r) => ({ channelId: r.channelId, ...r.status, idleFor: Date.now() - r.lastAccess }));
+  return [...runners.values()].map((r) => ({ channelId: r.channelId, ...r.status, viewers: r.activeViewers(), idleFor: Date.now() - r.lastAccess }));
+}
+
+// ---------------------------------------------------------------------------
+// One stream per viewer IP: tuning in to a channel releases the one that IP was watching before,
+// so channel surfing never leaves ffmpeg processes and debrid connections running behind you.
+
+const tunedTo = new Map(); // viewer ip -> channel id it last tuned in to
+
+export function tuneIn(ip, channelId) {
+  const id = Number(channelId);
+  const prev = tunedTo.get(ip);
+  tunedTo.set(ip, id);
+  runners.get(id)?.touch(ip);
+  if (prev === undefined || prev === id || !store.getSettings().oneStreamPerIp) return;
+  const old = runners.get(prev);
+  if (!old) return;
+  old.viewers.delete(ip);
+  if (!old.activeViewers().length) {
+    log.info(`channel ${prev}: ${ip} switched to channel ${id}, stopping`);
+    stopRunner(prev);
+  }
+}
+
+/** False once this viewer has tuned in to a different channel (when the cap is on). */
+export function mayWatch(ip, channelId) {
+  if (!store.getSettings().oneStreamPerIp) return true;
+  const t = tunedTo.get(ip);
+  return t === undefined || t === Number(channelId);
 }
 
 export function startReaper() {

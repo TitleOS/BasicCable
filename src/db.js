@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = {
   timezone: config.timezone,
   publicUrl: config.baseUrl,
   defaultResolution: 1080,
+  // Each viewer IP watches one channel at a time; tuning in elsewhere releases the previous one.
+  oneStreamPerIp: true,
 };
 
 const SCHEMA = `
