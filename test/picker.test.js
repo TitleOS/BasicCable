@@ -73,3 +73,13 @@ test('preferred keywords (e.g. Superfan) win over resolution, then resolution de
   // Without preferences the plain 1080p release is first again.
   assert.equal(rankStreams(list, { resolution: 1080, options: {} })[0].resolution, 1080);
 });
+
+test('prefetch lookups are spaced 3 to 30 seconds apart', async () => {
+  const { staggerDelay } = await import('../src/prefetch.js');
+  assert.equal(staggerDelay(0), 3000);
+  assert.equal(staggerDelay(1), 30000);
+  for (let i = 0; i < 100; i++) {
+    const d = staggerDelay();
+    assert.ok(d >= 3000 && d <= 30000, `delay ${d}`);
+  }
+});

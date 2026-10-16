@@ -126,6 +126,8 @@ Opening a channel then starts ffmpeg straight away. The log line for the program
 
 Preparing also reveals the file's real length. If it's more than a minute longer than its guide slot, the slot is stretched to fit (rounded up per channel), and the rest of the guide moves back. A Superfan episode in a 25-minute slot gets 30 or 35 minutes instead of being cut off. Only programs that haven't started yet are changed. If a stretched program runs into a time slot, that slot starts late by the same amount.
 
+Lookups are spaced 3–30 seconds apart at random, so a batch of channels never hits your addons all at once and trips their rate limits. Tuning in never waits for this spacing. If a program isn't prepared yet, opening it looks it up immediately.
+
 The cost is one addon lookup and one file check per program, made even when nobody is watching. Set **Prepare streams ahead** to 0 to turn it off.
 
 ## Stream cap

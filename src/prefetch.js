@@ -89,6 +89,14 @@ async function fitGuideToFile(item, channel, info) {
   }
 }
 
+// Space addon lookups out by a random 3-30 s so a batch of channels doesn't trip addon rate limits.
+// Applies across ticks; a viewer tuning in never waits for it.
+const STAGGER_MIN_MS = 3000;
+const STAGGER_MAX_MS = 30000;
+export const staggerDelay = (rand = Math.random()) => Math.round(STAGGER_MIN_MS + rand * (STAGGER_MAX_MS - STAGGER_MIN_MS));
+let nextLookupAt = 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 let busy = false;
 
 /** Every minute, prepare whatever is on now or starts within the lead time, on every enabled channel. */
@@ -101,8 +109,13 @@ async function tick() {
     const now = Date.now();
     for (const channel of store.listChannels().filter((c) => c.enabled)) {
       const items = store.all('SELECT * FROM epg WHERE channel_id = ? AND end > ? AND start <= ? ORDER BY start', channel.id, now, now + lead);
-      for (const item of items) {
-        if (fresh(ready.get(keyOf(item, channel)))) continue;
+      for (const listed of items) {
+        if (fresh(ready.get(keyOf(listed, channel)))) continue;
+        const wait = nextLookupAt - Date.now();
+        if (wait > 0) await sleep(wait);
+        // While we waited, a viewer may have prepared it, or the guide may have been replanned.
+        const item = store.get('SELECT * FROM epg WHERE id = ?', listed.id);
+        if (!item || item.end <= Date.now() || fresh(ready.get(keyOf(item, channel)))) continue;
         const t0 = Date.now();
         let prep = null;
         try {
@@ -110,6 +123,8 @@ async function tick() {
         } catch (e) {
           log.warn(`prefetch: channel ${channel.number}: ${e.message}`);
           continue;
+        } finally {
+          nextLookupAt = Date.now() + staggerDelay();
         }
         if (!prep) {
           log.info(`prefetch: channel ${channel.number}: nothing playable for ${itemLabel(item)}`);
