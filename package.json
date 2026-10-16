@@ -1,0 +1,18 @@
+{
+  "name": "streamtube",
+  "version": "0.1.0",
+  "description": "Virtual live TV channels for Stremio, powered by your debrid-enabled stream addons",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "dependencies": {
+    "luxon": "^3.7.2"
+  },
+  "license": "MIT"
+}

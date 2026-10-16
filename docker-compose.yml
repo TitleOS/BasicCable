@@ -1,0 +1,21 @@
+services:
+  streamtube:
+    build: .
+    image: streamtube:latest
+    container_name: streamtube
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    environment:
+      # Your local timezone: schedules and time slots use it.
+      TZ: America/Chicago
+      # The address other devices on your network use to reach this box.
+      # Optional: if empty, StreamTube uses whatever address Stremio installed the addon from.
+      BASE_URL: ""
+      # Optional password for the web UI (user name can be anything). Stremio endpoints stay open.
+      ADMIN_PASSWORD: ""
+    volumes:
+      - ./data:/data
+    # Live segments are short-lived; keep them in RAM.
+    tmpfs:
+      - /tmp/streamtube-hls:size=512m
