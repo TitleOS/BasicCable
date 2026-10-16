@@ -242,7 +242,7 @@ async function viewChannels(id) {
 
 function channelForm(ch) {
   const c = ch || { name: '', number: '', logo: '', resolution: state.info?.defaultResolution || 1080, fallback: 'lower', fill_mode: 'shuffle', round_minutes: 5, enabled: 1, options: {} };
-  const o = { avoidDolbyVision: true, audio: 'aac', audioLanguage: 'eng', excludeKeywords: [], ...c.options };
+  const o = { avoidDolbyVision: true, audio: 'aac', audioLanguage: 'eng', excludeKeywords: [], subtitles: 'auto', ...c.options };
   const f = {
     name: h('input', { type: 'text', value: c.name, placeholder: 'e.g. Sitcoms' }),
     number: h('input', { type: 'number', min: 1, value: c.number, placeholder: 'auto' }),
@@ -256,6 +256,10 @@ function channelForm(ch) {
     round_minutes: h('select', {}, [0, 1, 5, 10, 15, 30].map((m) => h('option', { value: m, selected: m === c.round_minutes }, m ? `Round up to ${m} min` : 'Exact runtime'))),
     audioLanguage: h('input', { type: 'text', value: o.audioLanguage, maxlength: 3, placeholder: 'eng' }),
     audio: h('select', {}, h('option', { value: 'aac', selected: o.audio !== 'copy' }, 'Convert to stereo AAC (most compatible)'), h('option', { value: 'copy', selected: o.audio === 'copy' }, 'Pass through original audio')),
+    subtitles: h('select', {},
+      h('option', { value: 'auto', selected: o.subtitles === 'auto' }, 'Selectable track, or burned in for image subs'),
+      h('option', { value: 'soft', selected: o.subtitles === 'soft' }, 'Selectable track only (never re-encode)'),
+      h('option', { value: 'off', selected: o.subtitles === 'off' }, 'Off')),
     excludeKeywords: h('input', { type: 'text', value: (o.excludeKeywords || []).join(', '), placeholder: 'e.g. HEVC, x265, REMUX' }),
     avoidDolbyVision: h('input', { type: 'checkbox', checked: o.avoidDolbyVision !== false }),
     includeSpecials: h('input', { type: 'checkbox', checked: !!o.includeSpecials }),
@@ -266,7 +270,7 @@ function channelForm(ch) {
       name: f.name.value, logo: f.logo.value, resolution: Number(f.resolution.value), fallback: f.fallback.value,
       fill_mode: f.fill_mode.value, round_minutes: Number(f.round_minutes.value), enabled: f.enabled.checked,
       options: {
-        audioLanguage: f.audioLanguage.value, audio: f.audio.value, excludeKeywords: f.excludeKeywords.value,
+        audioLanguage: f.audioLanguage.value, audio: f.audio.value, subtitles: f.subtitles.value, excludeKeywords: f.excludeKeywords.value,
         avoidDolbyVision: f.avoidDolbyVision.checked, includeSpecials: f.includeSpecials.checked,
       },
     };
@@ -286,6 +290,7 @@ function channelForm(ch) {
       field('Slot length', f.round_minutes, 'Padding absorbs runtime differences'),
       field('Audio language', f.audioLanguage, 'ISO 639-2, e.g. eng, spa, jpn'),
       field('Audio', f.audio),
+      field('English subtitles', f.subtitles, 'Prefers an SDH track; image subs (Blu-ray PGS) need re-encoding to show'),
       field('Skip streams containing', f.excludeKeywords, 'Comma separated')),
     h('div', { class: 'row', style: { marginTop: '14px' } },
       h('label', { class: 'check' }, f.enabled, 'Enabled'),

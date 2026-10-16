@@ -18,6 +18,11 @@ router.get('/health', (req, res) => send(res, 200, { ok: true }));
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
   const pathname = url.pathname;
+  // Log what clients ask for (Stremio, IPTV players), but not segment/health/UI noise.
+  if (!/^\/(live\/[^/]+\/(p\d|sub\/|video\.m3u8|subs\.m3u8)|health|api\/|app\.js|style\.css|icon\.svg|logo\/)/.test(pathname) && pathname !== '/') {
+    const t0 = Date.now();
+    res.on('finish', () => log.info(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - t0}ms · ${req.headers['user-agent'] || '-'}`));
+  }
   if (req.method === 'OPTIONS') return send(res, 204, '');
   try {
     const m = router.match(req.method, pathname);

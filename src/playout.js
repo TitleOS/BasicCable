@@ -5,10 +5,13 @@ import { config, log } from './config.js';
 import { store } from './db.js';
 import { findStreams, forgetStream } from './picker.js';
 import { buildChannel, itemLabel } from './scheduler.js';
+import { subtitlePlan, burnFilter } from './subtitles.js';
 
 const WINDOW = 6; // segments listed in the live playlist
 const KEEP_FILES = 30; // segment files kept on disk per channel
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const BURN_PRESET = process.env.SUBTITLE_BURN_PRESET || 'veryfast';
+const EMPTY_VTT = 'WEBVTT\n\n';
 
 // ---------------------------------------------------------------------------
 // ffmpeg capabilities
@@ -23,8 +26,11 @@ export function ffmpegCaps() {
       const major = m ? Number(m[1]) : 0, minor = m ? Number(m[2]) : 0;
       // "-readrate_initial_burst" arrived in 6.1; older builds just pace from the first frame.
       const burst = major > 6 || (major === 6 && minor >= 1) || !m;
+      // ffmpeg 8.0's -readrate falls to ~0.5x real time whenever a subtitle stream is mapped, which would
+      // stall the channel; 7.x (what the Docker image ships) paces correctly.
+      const subtitles = !m || major < 8;
       execFile(config.ffmpeg, ['-hide_banner', '-filters'], (_e, out) => {
-        resolve({ ok: true, version: m ? `${m[1]}.${m[2]}` : 'unknown', burst, drawtext: /\bdrawtext\b/.test(out || '') });
+        resolve({ ok: true, version: m ? `${m[1]}.${m[2]}` : 'unknown', burst, subtitles, drawtext: /\bdrawtext\b/.test(out || '') });
       });
     });
   });
@@ -58,6 +64,7 @@ export function probe(url, headers) {
           duration: Number(j.format?.duration) || null,
           video: streams.find((s) => s.codec_type === 'video'),
           audio: streams.filter((s) => s.codec_type === 'audio'),
+          subtitles: streams.filter((s) => s.codec_type === 'subtitle'),
         });
       } catch {
         resolve(null);
@@ -88,7 +95,8 @@ class ChannelRunner {
     this.channelId = Number(channelId);
     this.dir = path.join(config.hlsDir, `ch${this.channelId}-${Date.now().toString(36)}`);
     fs.mkdirSync(this.dir, { recursive: true });
-    this.segments = []; // {name, duration, disc, seq}
+    this.segments = []; // {name, duration, disc, seq, program, index}
+    this.programs = new Map(); // program number -> { vtt: bool, firstPts: Promise<number> }
     this.nextSeq = 0;
     this.program = 0;
     this.lastAccess = Date.now();
@@ -183,8 +191,15 @@ class ChannelRunner {
         stream: { label: cand.label, resolution: cand.resolution, addon: cand.addon, codec: info.video?.codec_name, height: info.video?.height },
         message: '',
       });
-      log.info(`channel ${channel.number}: playing ${itemLabel(item)} from ${Math.round(startAt)}s @ ${info.video?.height || '?'}p`);
-      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit));
+      const caps = await ffmpegCaps();
+      const subs = caps.subtitles ? subtitlePlan(info.subtitles, channel.options?.subtitles || 'auto') : null;
+      if (!caps.subtitles && subtitlePlan(info.subtitles, channel.options?.subtitles || 'auto')) {
+        log.warn(`channel ${channel.number}: skipping subtitles, ffmpeg ${caps.version} can't pace them in real time (use ffmpeg 7.x)`);
+      }
+      if (subs) this.status.stream.subtitles = `${subs.stream.tags?.title || subs.stream.tags?.language || 'track ' + subs.index} (${subs.delivery === 'vtt' ? 'selectable' : 'burned in'})`;
+      log.info(`channel ${channel.number}: playing ${itemLabel(item)} from ${Math.round(startAt)}s @ ${info.video?.height || '?'}p` +
+        (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''})` : ''));
+      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs), { vtt: subs?.delivery === 'vtt' });
       if (this.stopped) return 'done';
       if (produced.code === 0) return 'done';
       if (produced.segments > 0) return 'retry';
@@ -194,7 +209,7 @@ class ChannelRunner {
     return 'failed';
   }
 
-  mainArgs(cand, info, channel, offset, limit) {
+  mainArgs(cand, info, channel, offset, limit, subs) {
     const opts = channel.options || {};
     const audioIdx = pickAudio(info.audio, opts.audioLanguage);
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
@@ -204,15 +219,24 @@ class ChannelRunner {
     args.push('-readrate', '1');
     if (this.capsBurst) args.push('-readrate_initial_burst', '10');
     args.push('-i', cand.url, '-t', limit.toFixed(2));
-    args.push('-map', '0:v:0');
+    if (subs?.delivery === 'burn') {
+      // Image subtitles: overlay them and re-encode, with a keyframe every 2s so segments stay ~4s.
+      args.push('-filter_complex', burnFilter(info.video || {}, subs.stream, subs.index), '-map', '[vout]');
+      args.push('-c:v', 'libx264', '-preset', BURN_PRESET, '-crf', '21', '-maxrate', '10M', '-bufsize', '20M',
+        '-force_key_frames', 'expr:gte(t,n_forced*2)', '-sc_threshold', '0');
+    } else {
+      args.push('-map', '0:v:0', '-c:v', 'copy');
+    }
     if (audioIdx != null) args.push('-map', `0:a:${audioIdx}`);
-    args.push('-c:v', 'copy');
     if (audioIdx != null) {
       const a = info.audio[audioIdx];
       if (opts.audio === 'copy' || (a.codec_name === 'aac' && (a.channels || 2) <= 2)) args.push('-c:a', 'copy');
       else args.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2');
     }
-    args.push('-sn', '-dn', '-max_muxing_queue_size', '2048');
+    // Text subtitles ride along as a WebVTT track, cut in step with the video segments.
+    if (subs?.delivery === 'vtt') args.push('-map', `0:s:${subs.index}`, '-c:s', 'webvtt');
+    else args.push('-sn');
+    args.push('-dn', '-max_muxing_queue_size', '2048');
     return args;
   }
 
@@ -236,9 +260,11 @@ class ChannelRunner {
   }
 
   /** Runs one ffmpeg program into its own HLS playlist and folds its segments into the channel playlist. */
-  runFfmpeg(inputArgs) {
+  runFfmpeg(inputArgs, { vtt = false } = {}) {
     const n = ++this.program;
-    const playlist = path.join(this.dir, `p${n}.m3u8`);
+    // The trailing "_" matters: ffmpeg names WebVTT segments "<playlist name><index>.vtt", i.e. p3_0.vtt.
+    const playlist = path.join(this.dir, `p${n}_.m3u8`);
+    this.programs.set(n, { vtt });
     const args = [...inputArgs,
       '-f', 'hls', '-hls_time', '4', '-hls_list_size', '0', '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', path.join(this.dir, `p${n}_%05d.ts`), playlist];
@@ -260,7 +286,8 @@ class ChannelRunner {
           if (m && lines[i + 1] && !lines[i + 1].startsWith('#')) found.push({ duration: Number(m[1]), name: lines[i + 1].trim() });
         }
         for (const seg of found.slice(seen)) {
-          this.segments.push({ ...seg, seq: this.nextSeq++, disc: firstOfProgram && this.segments.length > 0 });
+          const index = Number(seg.name.match(/_(\d+)\.ts$/)?.[1] ?? 0);
+          this.segments.push({ ...seg, program: n, index, seq: this.nextSeq++, disc: firstOfProgram && this.segments.length > 0 });
           firstOfProgram = false;
         }
         seen = Math.max(seen, found.length);
@@ -286,6 +313,7 @@ class ChannelRunner {
       if (seg.deleted) continue;
       seg.deleted = true;
       fs.rm(path.join(this.dir, seg.name), { force: true }, () => {});
+      if (this.programs.get(seg.program)?.vtt) fs.rm(path.join(this.dir, `p${seg.program}_${seg.index}.vtt`), { force: true }, () => {});
     }
     // Drop bookkeeping for long-gone segments, but remember discontinuities for the sequence counter.
     if (this.segments.length > 500) {
@@ -309,7 +337,11 @@ class ChannelRunner {
     return this.segments.length > 0;
   }
 
-  playlist() {
+  /**
+   * Live media playlist. The subtitle playlist mirrors the video one segment for segment (same sequence
+   * numbers, durations and discontinuities); programs without a text track just get empty cues.
+   */
+  playlist(kind = 'video') {
     const win = this.segments.slice(-WINDOW);
     const discBefore = (this.droppedDisc || 0) + this.segments.slice(0, this.segments.length - win.length).filter((s) => s.disc).length;
     const target = Math.max(4, ...win.map((s) => Math.ceil(s.duration)));
@@ -317,9 +349,42 @@ class ChannelRunner {
       `#EXT-X-MEDIA-SEQUENCE:${win[0]?.seq ?? 0}`, `#EXT-X-DISCONTINUITY-SEQUENCE:${discBefore}`];
     for (const s of win) {
       if (s.disc) out.push('#EXT-X-DISCONTINUITY');
-      out.push(`#EXTINF:${s.duration.toFixed(3)},`, s.name);
+      out.push(`#EXTINF:${s.duration.toFixed(3)},`, kind === 'subs' ? `sub/p${s.program}_${s.index}.vtt` : s.name);
     }
     return out.join('\n') + '\n';
+  }
+
+  /** WebVTT for one segment, with the timestamp map players need to line cues up with the video. */
+  async subtitleSegment(name) {
+    const m = name.match(/^p(\d+)_(\d+)\.vtt$/);
+    const prog = m && this.programs.get(Number(m[1]));
+    if (!prog?.vtt) return EMPTY_VTT;
+    let text;
+    try {
+      text = await fs.promises.readFile(path.join(this.dir, `p${m[1]}_${Number(m[2])}.vtt`), 'utf8');
+    } catch {
+      return EMPTY_VTT;
+    }
+    const pts = await this.programStartPts(Number(m[1]));
+    const body = text.replace(/^\uFEFF?WEBVTT[^\n]*\n(X-TIMESTAMP-MAP[^\n]*\n)?/, '');
+    return `WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:${pts},LOCAL:00:00:00.000\n${body}`;
+  }
+
+  /** MPEG-TS timestamp (90 kHz) where a program's WebVTT time zero lands, read from its first segment. */
+  programStartPts(n) {
+    const prog = this.programs.get(n);
+    if (!prog.firstPts) {
+      const first = path.join(this.dir, `p${n}_00000.ts`);
+      prog.firstPts = new Promise((resolve) => {
+        execFile(config.ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts,dts',
+          '-read_intervals', '%+#1', '-of', 'json', first], { timeout: 10000 }, (err, stdout) => {
+          let pts = 126000; // ffmpeg's MPEG-TS muxer starts at 1.4s by default
+          try { pts = Number(JSON.parse(stdout).packets[0].dts) || pts; } catch { /* keep default */ }
+          resolve(pts);
+        });
+      });
+    }
+    return prog.firstPts;
   }
 
   segmentPath(name) {

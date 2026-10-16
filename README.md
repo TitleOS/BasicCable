@@ -7,6 +7,7 @@ You build channels in a web UI that runs in a container on your network. Each ch
 - **Auto-fill pools.** Add shows, movies or wildcards to a channel. Any hour without a time slot gets filled from the pool. Shows play their episodes in order and remember where they stopped.
 - **Time slots.** Weekly blocks such as "Weeknights 8:00 PM: Modern Family" or "Weekends 10 PM–1 AM: `Batman*` movies".
 - **Wildcards.** `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. You can untick any match. New titles that match are picked up each day.
+- **English subtitles.** StreamTube looks for an English SDH track in the file, then the first English or unlabelled one. Text subtitles become a selectable caption track. Image subtitles (Blu-ray PGS) are burned into the picture. See [Subtitles](#subtitles).
 - **Target resolution per channel.** The picker uses the exact resolution when it can. Otherwise it takes the next best: by default the nearest lower one, or optionally the nearest higher one. It only uses cached, direct debrid links, and it skips CAM/TS releases, Dolby Vision-only files (optional) and any keywords you list.
 - **Live guide.** The web UI shows a ticking clock, a now-playing strip with progress bars and an EPG grid. Click any program to see which stream it would pick.
 - **Other players.** Besides the Stremio addon you get an M3U playlist and an XMLTV guide for VLC, Kodi, TiviMate, Jellyfin, Plex and similar apps.
@@ -57,6 +58,7 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 | `HLS_DIR` | `/tmp/streamtube-hls` | Live segments, about 30 per active channel. tmpfs works well here. |
 | `GUIDE_HOURS` | `48` | How far ahead the guide is planned. |
 | `IDLE_SECONDS` | `60` | How long a channel keeps running after its last viewer leaves. |
+| `SUBTITLE_BURN_PRESET` | `veryfast` | x264 preset used when burning in image subtitles. Faster presets use less CPU but give lower quality. |
 
 ## Scheduling details
 
@@ -64,6 +66,27 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 - **Slots win.** Auto-fill items never run into a slot. Leftover time at the end of a block goes to the previous item if it's under 10 minutes. Otherwise a fitting item from the pool fills it. An episode that has to be cut short airs again next time instead of being skipped.
 - **Episode memory** is per channel and per show, and is shared between the pool and slots. Specials (season 0) and unreleased episodes are skipped.
 - Editing a channel replans everything after the program that's on now. What's airing keeps playing.
+
+## Subtitles
+
+When the file has embedded subtitles, StreamTube picks one track per program:
+
+1. An English SDH track (flagged hearing-impaired, or titled SDH/CC), if there is one.
+2. Otherwise, the first English or unlabelled track.
+
+Forced-only tracks, which carry just the foreign-language lines, are skipped.
+
+How the track reaches the player depends on its format and the channel's **English subtitles** setting:
+
+| | Selectable track, or burned in for image subs *(default)* | Selectable track only | Off |
+|---|---|---|---|
+| Text (SRT, ASS, WebVTT) | Caption track, on by default | Caption track, on by default | None |
+| Image (Blu-ray PGS, DVD) | Burned into the video | Skipped; a text track is used if there is one | None |
+
+- **Caption tracks** cost almost nothing: ffmpeg turns them into WebVTT alongside the video. The channel's `index.m3u8` becomes an HLS master playlist with an "English" track marked default, and players can turn it off.
+- **Burning in** means re-encoding the video with x264. Expect real 1080p content to keep a few CPU cores busy per channel. 4K sources are scaled to 1080p first. Lower `SUBTITLE_BURN_PRESET` (for example `superfast` or `ultrafast`) if a channel can't keep up. Set the channel to **Selectable track only** to never re-encode.
+- Subtitle files that sit next to the video in a torrent can't be used. Debrid links point at the video file alone.
+- Subtitles need ffmpeg 7.x. ffmpeg 8.0's real-time pacing slows to about half speed when a subtitle stream is included, so on 8.x StreamTube plays without subtitles and logs a warning. The Docker image ships 7.1.
 
 ## Outputs
 
@@ -78,7 +101,7 @@ The Stremio stream list also offers **Start over**, which redirects straight to 
 
 ## Limits worth knowing
 
-- Video is copied as-is to keep CPU use near zero. The device you watch on has to decode whatever the release uses, such as HEVC or 10-bit. To avoid a codec, add it to the channel's skip list, for example `HEVC, x265`.
+- Video is copied as-is to keep CPU use near zero (except when burning in image subtitles). The device you watch on has to decode whatever the release uses, such as HEVC or 10-bit. To avoid a codec, add it to the channel's skip list, for example `HEVC, x265`.
 - Joining mid-program starts at the nearest keyframe before the offset, usually within a couple of seconds.
 - Uncached torrents are ignored, because live TV can't wait for a download. Keep a few addons configured to get the best cache coverage.
 
@@ -98,4 +121,4 @@ SAMPLE_FILE=/path/to/video.mkv node test/mock-addon.js
 
 Then add `http://localhost:7099/manifest.json` as a stream addon.
 
-Requires Node 22.13 or newer (it uses the built-in `node:sqlite`) and ffmpeg 6.1 or newer on the PATH (older versions work but take longer to tune in).
+Requires Node 22.13 or newer (it uses the built-in `node:sqlite`) and ffmpeg 6.1 or newer on the PATH (older versions work but take longer to tune in). Use ffmpeg 7.x if you want subtitles; see [Subtitles](#subtitles).

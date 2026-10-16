@@ -38,6 +38,7 @@ function channelInput(b, partial = false) {
       avoidDolbyVision: o.avoidDolbyVision !== false,
       includeSpecials: !!o.includeSpecials,
       audio: o.audio === 'copy' ? 'copy' : 'aac',
+      subtitles: ['auto', 'soft', 'off'].includes(o.subtitles) ? o.subtitles : 'auto',
       audioLanguage: String(o.audioLanguage || 'eng').trim().toLowerCase().slice(0, 3),
       excludeKeywords: (Array.isArray(o.excludeKeywords) ? o.excludeKeywords : String(o.excludeKeywords || '').split(','))
         .map((s) => String(s).trim()).filter(Boolean),

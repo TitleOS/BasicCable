@@ -53,11 +53,11 @@ function channelMeta(channel, req, full = false) {
     background: cur?.background || cur?.poster || undefined,
     description: lines.join('\n'),
     genres: ['StreamTube'],
+    runtime: 'LIVE',
+    // Without videos, Stremio needs defaultVideoId (also on catalog previews) to know which streams to load.
+    behaviorHints: { defaultVideoId: PREFIX + channel.id, isLive: true },
   };
-  if (full) {
-    meta.releaseInfo = cur ? `${clock(cur.start)} – ${clock(cur.end)}` : '';
-    meta.behaviorHints = { defaultVideoId: meta.id };
-  }
+  if (full) meta.releaseInfo = cur ? `${clock(cur.start)} – ${clock(cur.end)}` : '';
   return meta;
 }
 
@@ -101,10 +101,10 @@ export function registerAddon(router) {
       cur ? `▶ ${itemLabel(cur)} · ${mmss((now - cur.start) / 1000)} / ${mmss((cur.end - cur.start) / 1000)}` : 'Nothing on right now',
       next ? `Next ${clock(next.start)}: ${itemLabel(next)}` : '',
     ].filter(Boolean).join('\n');
+    // Only `title`: Stremio treats it as an alias of `description`, and sending both makes it reject the stream.
     const streams = [{
       name: `StreamTube\nLive ${channel.resolution}p`,
       title: desc,
-      description: desc,
       url: `${base}/live/${channel.id}/index.m3u8`,
       behaviorHints: { bingeGroup: `streamtube-${channel.id}` },
     }];
@@ -112,7 +112,6 @@ export function registerAddon(router) {
       streams.push({
         name: 'StreamTube\nStart over',
         title: `${itemLabel(cur)} from the beginning (direct debrid link)`,
-        description: `${itemLabel(cur)} from the beginning (direct debrid link)`,
         url: `${base}/direct/${channel.id}/${cur.id}`,
         behaviorHints: { notWebReady: true, bingeGroup: `streamtube-direct-${channel.id}` },
       });
@@ -121,16 +120,43 @@ export function registerAddon(router) {
   });
 
   // --- live HLS
-  router.get('/live/:id/index.m3u8', async (req, res, { id }) => {
+  const M3U8 = { 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-cache, no-store' };
+  const liveRunner = async (id) => {
     const channel = store.getChannel(id);
     if (!channel || !channel.enabled) throw new HttpError(404, 'No such channel');
     const runner = await getRunner(channel.id);
     const ok = await runner.waitReady();
     if (!ok) throw new HttpError(503, runner.status.message || 'Channel is still tuning, try again');
-    send(res, 200, runner.playlist(), {
-      'content-type': 'application/vnd.apple.mpegurl',
-      'cache-control': 'no-cache, no-store',
-    });
+    return { channel, runner };
+  };
+
+  // With subtitles on, index.m3u8 is a master playlist with an English caption track (filled whenever the
+  // current program has a text subtitle); otherwise it is the plain video playlist, as before.
+  router.get('/live/:id/index.m3u8', async (req, res, { id }) => {
+    const { channel, runner } = await liveRunner(id);
+    if ((channel.options?.subtitles || 'auto') === 'off') return send(res, 200, runner.playlist(), M3U8);
+    send(res, 200, [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subs.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=8000000,SUBTITLES="subs"',
+      'video.m3u8',
+      '',
+    ].join('\n'), M3U8);
+  });
+  router.get('/live/:id/video.m3u8', async (req, res, { id }) => {
+    const { runner } = await liveRunner(id);
+    send(res, 200, runner.playlist('video'), M3U8);
+  });
+  router.get('/live/:id/subs.m3u8', async (req, res, { id }) => {
+    const { runner } = await liveRunner(id);
+    send(res, 200, runner.playlist('subs'), M3U8);
+  });
+  router.get('/live/:id/sub/:name', async (req, res, { id, name }) => {
+    const runner = peekRunner(id);
+    if (!runner) throw new HttpError(404, 'Channel not running');
+    runner.touch();
+    send(res, 200, await runner.subtitleSegment(name), { 'content-type': 'text/vtt; charset=utf-8', 'cache-control': 'max-age=60' });
   });
 
   router.get('/live/:id/:segment', (req, res, { id, segment }) => {
