@@ -245,7 +245,15 @@ export function buildChannel(channelId, opts = {}) {
   return next.finally(() => { if (building.get(key) === next) building.delete(key); });
 }
 
-async function doBuild(channelId, { rebuild = false, now = Date.now() } = {}) {
+/**
+ * Stretch an item that hasn't started yet to the real length of the file picked for it (e.g. an extended
+ * "Superfan" cut), then replan everything after it. Returns false if the item is gone or already on air.
+ */
+export function extendItem(channelId, itemId, newEnd) {
+  return buildChannel(channelId, { rebuild: true, extend: { id: Number(itemId), end: newEnd } });
+}
+
+async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = null } = {}) {
   const channel = store.getChannel(channelId);
   if (!channel) return;
   const zone = store.getSettings().timezone || config.timezone;
@@ -265,17 +273,25 @@ async function doBuild(channelId, { rebuild = false, now = Date.now() } = {}) {
   }
   const lib = await loadLibrary([...poolTitles, ...[...slotTitles.values()].flat()], channel);
 
-  store.tx(() => {
+  return store.tx(() => {
+    // Normally everything after "now" is replanned; when extending an item, everything after that item.
+    let cutoff = now;
+    if (extend) {
+      const row = store.get('SELECT * FROM epg WHERE id = ? AND channel_id = ?', extend.id, channelId);
+      if (!row || row.start <= now || extend.end <= row.end) return false;
+      cutoff = row.start;
+      store.run('UPDATE epg SET end = ?, truncated = 0 WHERE id = ?', extend.end, row.id);
+    }
     if (rebuild) {
       // Keep whatever is on air right now; rewind cursors moved by the rows we drop.
-      const dropped = store.all('SELECT * FROM epg WHERE channel_id = ? AND start > ? ORDER BY start', channelId, now);
+      const dropped = store.all('SELECT * FROM epg WHERE channel_id = ? AND start > ? ORDER BY start', channelId, cutoff);
       const restore = {};
       for (const r of dropped) for (const [k, v] of Object.entries(r.cursor_prev)) if (!(k in restore)) restore[k] = v;
       for (const [k, v] of Object.entries(restore)) {
         if (v === null) store.run('DELETE FROM cursors WHERE channel_id = ? AND key = ?', channelId, k);
         else store.run('INSERT INTO cursors(channel_id, key, value) VALUES (?, ?, ?) ON CONFLICT(channel_id, key) DO UPDATE SET value = excluded.value', channelId, k, v);
       }
-      store.run('DELETE FROM epg WHERE channel_id = ? AND start > ?', channelId, now);
+      store.run('DELETE FROM epg WHERE channel_id = ? AND start > ?', channelId, cutoff);
     }
     // Prune old history.
     store.run('DELETE FROM epg WHERE channel_id = ? AND end < ?', channelId, now - 48 * HOUR);
@@ -284,7 +300,7 @@ async function doBuild(channelId, { rebuild = false, now = Date.now() } = {}) {
     let t;
     if (last && last.end > now) t = last.end;
     else t = DateTime.fromMillis(now, { zone }).startOf('hour').plus({ minutes: DateTime.fromMillis(now, { zone }).minute >= 30 ? 30 : 0 }).toMillis();
-    if (t >= horizon) return;
+    if (t >= horizon) return true;
 
     const recent = store.recentEpg(channelId, 20).map((r) => r.meta_id);
     const planner = new Planner(channel, lib, store.getCursors(channelId), recent);
@@ -327,6 +343,7 @@ async function doBuild(channelId, { rebuild = false, now = Date.now() } = {}) {
     const up = store.db.prepare('INSERT INTO cursors(channel_id, key, value) VALUES (?, ?, ?) ON CONFLICT(channel_id, key) DO UPDATE SET value = excluded.value');
     for (const [k, v] of Object.entries(planner.cursors)) if (v != null) up.run(channelId, k, String(v));
     if (planner.rows.length) log.info(`channel ${channel.number} "${channel.name}": scheduled ${planner.rows.length} items`);
+    return true;
   });
 }
 

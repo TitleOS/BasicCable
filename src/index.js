@@ -7,6 +7,7 @@ import { registerAddon } from './addon.js';
 import { registerApi } from './api.js';
 import { startScheduler } from './scheduler.js';
 import { startReaper, ffmpegCaps, runnerStatus, stopRunner } from './playout.js';
+import { startPrefetcher } from './prefetch.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -57,6 +58,7 @@ server.listen(config.port, config.host, async () => {
   else log.info(`ffmpeg ${caps.version}${caps.burst ? '' : ' (no initial burst support, tuning in will be slower)'}`);
   startReaper();
   startScheduler();
+  startPrefetcher();
 });
 
 function shutdown() {

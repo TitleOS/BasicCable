@@ -14,6 +14,10 @@ const DEFAULT_SETTINGS = {
   defaultResolution: 1080,
   // Each viewer IP watches one channel at a time; tuning in elsewhere releases the previous one.
   oneStreamPerIp: true,
+  // Releases whose name contains one of these words win over everything else (e.g. The Office "Superfan" cuts).
+  preferKeywords: ['Superfan'],
+  // Find, rank and probe each item's stream this many minutes before it airs (0 turns it off).
+  prefetchMinutes: 10,
 };
 
 const SCHEMA = `

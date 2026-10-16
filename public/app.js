@@ -218,7 +218,7 @@ async function loadCandidates(channel, it, box, fresh) {
     h('table', { class: 'cands' }, d.candidates.map((c, i) => h('tr', { class: i === 0 ? 'pick' : '' },
       h('td', {}, i === 0 ? '▶' : i + 1),
       h('td', {}, c.resolution ? `${c.resolution}p` : '?'),
-      h('td', {}, c.cached ? h('span', { class: 'badge ok' }, 'cached') : ''),
+      h('td', {}, c.cached ? h('span', { class: 'badge ok' }, 'cached') : '', c.preferred ? h('span', { class: 'badge ok', style: { marginLeft: '4px' } }, 'preferred') : ''),
       h('td', {}, c.label)))));
 }
 
@@ -479,6 +479,8 @@ async function viewSettings() {
   const pub = h('input', { type: 'url', value: s.publicUrl, placeholder: `${location.origin}`, style: { width: '100%' } });
   const res = h('select', {}, [2160, 1440, 1080, 720, 576, 480].map((r) => h('option', { value: r, selected: r === s.defaultResolution }, `${r}p`)));
   const oneStream = h('input', { type: 'checkbox', checked: s.oneStreamPerIp !== false });
+  const prefer = h('input', { type: 'text', value: (s.preferKeywords || []).join(', '), placeholder: 'e.g. Superfan, Extended' });
+  const prefetch = h('input', { type: 'number', min: 0, max: 60, value: s.prefetchMinutes ?? 10 });
   const testOut = h('div', {});
   const test = (btn) => busy(btn, async () => {
     const urls = addons.value.split('\n').map((x) => x.trim()).filter(Boolean);
@@ -499,7 +501,7 @@ async function viewSettings() {
     }
   });
   const save = (btn) => busy(btn, async () => {
-    await api('/api/settings', { method: 'PUT', body: { streamAddons: addons.value, metaAddon: meta.value, timezone: tz.value, publicUrl: pub.value, defaultResolution: Number(res.value), oneStreamPerIp: oneStream.checked } });
+    await api('/api/settings', { method: 'PUT', body: { streamAddons: addons.value, metaAddon: meta.value, timezone: tz.value, publicUrl: pub.value, defaultResolution: Number(res.value), oneStreamPerIp: oneStream.checked, preferKeywords: prefer.value, prefetchMinutes: Number(prefetch.value) } });
     state.info = await api('/api/info');
     state.tz = state.info.timezone;
     toast('Settings saved');
@@ -522,6 +524,11 @@ async function viewSettings() {
         h('span', { class: 'hint' }, 'Leave empty to use whatever address Stremio used to install the addon. Set it if you use a reverse proxy.')),
       h('label', { class: 'field', style: { marginTop: '12px' } }, 'Metadata addon', meta,
         h('span', { class: 'hint' }, 'Used for search, episode lists and runtimes. Cinemeta is what Stremio itself uses.')),
+      h('div', { class: 'grid-form', style: { marginTop: '12px' } },
+        h('label', { class: 'field' }, 'Prefer releases containing', prefer,
+          h('span', { class: 'hint' }, 'Comma separated. A match beats every other release, even at a different resolution. "Superfan" picks The Office extended episodes.')),
+        h('label', { class: 'field' }, 'Prepare streams ahead (minutes)', prefetch,
+          h('span', { class: 'hint' }, 'Find, pick and check each program’s file this long before it airs, so tuning in starts right away. 0 turns it off.'))),
       h('label', { class: 'check', style: { marginTop: '14px' } }, oneStream, 'One stream per viewer IP'),
       h('p', { class: 'hint' }, 'Each device watches one channel at a time. Switching channels releases the previous one right away, and stops it if nobody else is watching, instead of leaving it running for a minute.')),
     h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { class: 'btn primary', onclick: (e) => save(e.currentTarget) }, 'Save settings')),

@@ -3,7 +3,8 @@ import { config, log } from './config.js';
 import { send, readJson, baseUrl, HttpError } from './http.js';
 import { search, expandWildcard, fetchJson } from './metadata.js';
 import { buildChannel, resolveWildcard, itemLabel } from './scheduler.js';
-import { findStreams, rankStreams, addonBase, RESOLUTIONS } from './picker.js';
+import { findStreams, rankStreams, addonBase, clearStreams, RESOLUTIONS } from './picker.js';
+import { clearPrepared } from './prefetch.js';
 import { runnerStatus, stopRunner, ffmpegCaps } from './playout.js';
 
 const A = { auth: true };
@@ -102,10 +103,20 @@ async function applySettings(b) {
   if (b.publicUrl !== undefined) patch.publicUrl = String(b.publicUrl).trim().replace(/\/+$/, '');
   if (b.defaultResolution !== undefined) patch.defaultResolution = Number(b.defaultResolution) || 1080;
   if (b.oneStreamPerIp !== undefined) patch.oneStreamPerIp = !!b.oneStreamPerIp;
+  if (b.preferKeywords !== undefined) {
+    patch.preferKeywords = (Array.isArray(b.preferKeywords) ? b.preferKeywords : String(b.preferKeywords).split(','))
+      .map((k) => String(k).trim()).filter(Boolean);
+  }
+  if (b.prefetchMinutes !== undefined) patch.prefetchMinutes = Math.min(60, Math.max(0, parseInt(b.prefetchMinutes, 10) || 0));
   const before = store.getSettings();
   const after = store.saveSettings(patch);
   if (patch.timezone && patch.timezone !== before.timezone) {
     for (const c of store.listChannels()) await rebuild(c.id);
+  }
+  if (patch.preferKeywords || patch.streamAddons) {
+    // Different addons or preferences can change which file wins.
+    clearStreams();
+    clearPrepared();
   }
   return after;
 }
@@ -118,7 +129,7 @@ function channelDetail(c) {
 // Backup / restore
 
 const BACKUP_VERSION = 1;
-const SETTINGS_KEYS = ['streamAddons', 'metaAddon', 'timezone', 'publicUrl', 'defaultResolution', 'oneStreamPerIp'];
+const SETTINGS_KEYS = ['streamAddons', 'metaAddon', 'timezone', 'publicUrl', 'defaultResolution', 'oneStreamPerIp', 'preferKeywords', 'prefetchMinutes'];
 
 /**
  * Where each show is right now, so episodes continue in order on the new install. The stored cursors already
@@ -243,7 +254,7 @@ export function registerApi(router) {
     }
     const data = await fetchJson(`${base}/stream/series/tt1442437:1:1.json`, { timeoutMs: 30000 }).catch((e) => ({ error: e.message }));
     const streams = data.streams || [];
-    const ranked = rankStreams(streams, { resolution: 1080, fallback: 'lower', options: {} });
+    const ranked = rankStreams(streams, { resolution: 1080, fallback: 'lower', options: {} }, store.getSettings().preferKeywords || []);
     out.total = streams.length;
     out.withUrl = streams.filter((s) => s.url).length;
     out.playable = ranked.length;
@@ -289,6 +300,10 @@ export function registerApi(router) {
     const c = store.updateChannel(cur.id, channelInput(b, true));
     const scheduleChanged = ['fill_mode', 'round_minutes'].some((k) => b[k] !== undefined && b[k] !== cur[k]) ||
       (b.options && !!b.options.includeSpecials !== !!cur.options.includeSpecials);
+    if (b.resolution !== undefined || b.options || b.fallback !== undefined) {
+      clearStreams(c.id);
+      clearPrepared(c.id);
+    }
     if (scheduleChanged) await rebuild(c.id);
     else if (b.resolution !== undefined || b.options || b.fallback !== undefined || b.enabled !== undefined) stopRunner(c.id);
     send(res, 200, channelDetail(c));
@@ -395,7 +410,7 @@ export function registerApi(router) {
       target: c.resolution,
       fallback: c.fallback,
       error,
-      candidates: candidates.slice(0, 20).map((x) => ({ resolution: x.resolution, cached: x.cached, size: x.size, addon: x.addon, label: x.label })),
+      candidates: candidates.slice(0, 20).map((x) => ({ resolution: x.resolution, cached: x.cached, preferred: x.preferred, size: x.size, addon: x.addon, label: x.label })),
     });
   }, A);
 

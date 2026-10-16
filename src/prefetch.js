@@ -1,0 +1,133 @@
+// Getting a stream ready before anyone tunes in: ask the stream addons, rank the results and probe the
+// winner ahead of time, so tuning in only has to start ffmpeg.
+
+import { store } from './db.js';
+import { log } from './config.js';
+import { findStreams, forgetStream } from './picker.js';
+import { probe } from './probe.js';
+import { extendItem, itemLabel } from './scheduler.js';
+
+const READY_MS = 2 * 3600 * 1000; // debrid links stay valid for hours; re-check after this
+const RETRY_MS = 5 * 60 * 1000; // after finding nothing playable, wait before asking the addons again
+
+const ready = new Map(); // `${channelId}|${video_id}` -> { at, cand, info } or { at, failed: true }
+const inflight = new Map(); // same key -> Promise while a lookup is running
+
+const keyOf = (item, channel) => `${channel.id}|${item.video_id}`;
+
+function fresh(entry) {
+  return entry && Date.now() - entry.at < (entry.failed ? RETRY_MS : READY_MS);
+}
+
+/**
+ * The stream to play for a guide item: the best-ranked candidate that actually probes, with its probe
+ * result. Cached, and shared between the background prefetcher and a viewer tuning in at the same moment.
+ * Resolves to null when nothing playable was found.
+ */
+export function prepareStream(item, channel) {
+  const key = keyOf(item, channel);
+  const hit = ready.get(key);
+  if (fresh(hit)) return Promise.resolve(hit.failed ? null : hit);
+  if (inflight.has(key)) return inflight.get(key);
+  const job = (async () => {
+    const candidates = await findStreams(item, channel);
+    for (const cand of candidates.slice(0, 5)) {
+      const info = await probe(cand.url, cand.headers);
+      if (!info) {
+        log.info(`channel ${channel.number}: stream did not probe, trying next (${cand.label.slice(0, 80)})`);
+        forgetStream(item, channel, cand.url);
+        continue;
+      }
+      if (info.duration && info.duration < 90 && item.end - item.start > 5 * 60000) {
+        // Debrid "downloading" placeholder clips are short; skip them.
+        forgetStream(item, channel, cand.url);
+        continue;
+      }
+      const prepared = { at: Date.now(), cand, info };
+      ready.set(key, prepared);
+      return prepared;
+    }
+    ready.set(key, { at: Date.now(), failed: true });
+    return null;
+  })().finally(() => inflight.delete(key));
+  inflight.set(key, job);
+  return job;
+}
+
+/** A prepared stream failed to play: forget it so the next call picks another candidate. */
+export function dropPrepared(item, channel, url) {
+  const key = keyOf(item, channel);
+  if (ready.get(key)?.cand?.url === url) ready.delete(key);
+  forgetStream(item, channel, url);
+}
+
+/** Channel settings changed: what was picked before may no longer be what would be picked now. */
+export function clearPrepared(channelId = null) {
+  for (const key of ready.keys()) if (channelId == null || key.startsWith(`${channelId}|`)) ready.delete(key);
+}
+
+export function preparedFor(item, channel) {
+  const hit = ready.get(keyOf(item, channel));
+  return fresh(hit) && !hit.failed ? hit : null;
+}
+
+/**
+ * The guide uses the title's typical runtime. When the picked file is clearly longer (extended cuts such as
+ * The Office "Superfan" episodes), give the item its real length so it isn't cut off, and push the rest of
+ * the guide back. Only for items that haven't started yet.
+ */
+async function fitGuideToFile(item, channel, info) {
+  if (!info.duration || item.start <= Date.now()) return;
+  const scheduled = item.end - item.start;
+  const actual = info.duration * 1000;
+  if (actual <= scheduled + 60000 || actual > scheduled * 3) return;
+  const step = Math.max(1, channel.round_minutes || 1) * 60000;
+  const newEnd = item.start + Math.ceil(actual / step) * step;
+  if (await extendItem(channel.id, item.id, newEnd)) {
+    log.info(`channel ${channel.number}: ${itemLabel(item)} runs ${Math.round(actual / 60000)} min, ` +
+      `gave it ${Math.round((newEnd - item.start) / 60000)} min in the guide`);
+  }
+}
+
+let busy = false;
+
+/** Every minute, prepare whatever is on now or starts within the lead time, on every enabled channel. */
+async function tick() {
+  if (busy) return;
+  busy = true;
+  try {
+    const lead = Number(store.getSettings().prefetchMinutes ?? 10) * 60000;
+    if (lead <= 0) return;
+    const now = Date.now();
+    for (const channel of store.listChannels().filter((c) => c.enabled)) {
+      const items = store.all('SELECT * FROM epg WHERE channel_id = ? AND end > ? AND start <= ? ORDER BY start', channel.id, now, now + lead);
+      for (const item of items) {
+        if (fresh(ready.get(keyOf(item, channel)))) continue;
+        const t0 = Date.now();
+        let prep = null;
+        try {
+          prep = await prepareStream(item, channel);
+        } catch (e) {
+          log.warn(`prefetch: channel ${channel.number}: ${e.message}`);
+          continue;
+        }
+        if (!prep) {
+          log.info(`prefetch: channel ${channel.number}: nothing playable for ${itemLabel(item)}`);
+          continue;
+        }
+        log.info(`prefetch: channel ${channel.number}: ${itemLabel(item)} ready in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
+          `(${prep.info.video?.height || '?'}p, ${prep.info.duration ? Math.round(prep.info.duration / 60) + ' min' : 'unknown length'})`);
+        await fitGuideToFile(item, channel, prep.info);
+      }
+    }
+  } catch (e) {
+    log.error('prefetch failed:', e);
+  } finally {
+    busy = false;
+  }
+}
+
+export function startPrefetcher() {
+  setTimeout(tick, 5000).unref?.();
+  setInterval(tick, 60000).unref?.();
+}

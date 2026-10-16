@@ -6,6 +6,8 @@ import fs from 'node:fs';
 
 const file = process.env.SAMPLE_FILE;
 const port = Number(process.env.MOCK_PORT || 7099);
+// Real debrid addons take a few seconds to answer; MOCK_DELAY_MS imitates that.
+const delay = Number(process.env.MOCK_DELAY_MS || 0);
 if (!file || !fs.existsSync(file)) {
   console.error('Set SAMPLE_FILE to a video file');
   process.exit(1);
@@ -27,9 +29,12 @@ http.createServer((req, res) => {
       { name: '[RD+] Mock\n2160p', title: `Show ${id} 2160p DV HDR`, url: `${base}/video.mkv?q=2160` },
       { name: '[RD+] Mock\n720p', title: `Show ${id} 720p WEB-DL 💾 400 MB`, url: `${base}/video.mkv?q=720` },
       { name: '[RD+] Mock\n1080p', title: `Show ${id} 1080p BluRay 💾 1.2 GB`, url: `${base}/video.mkv?q=1080` },
+      { name: '[RD+] Mock\n720p', title: `Show ${id} Superfan Episodes 720p WEB-DL 💾 900 MB`, url: `${base}/video.mkv?q=superfan` },
     ];
-    res.writeHead(200, { 'content-type': 'application/json' });
-    return res.end(JSON.stringify({ streams }));
+    return setTimeout(() => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ streams }));
+    }, delay);
   }
   if (url.pathname === '/video.mkv') {
     const size = fs.statSync(file).size;

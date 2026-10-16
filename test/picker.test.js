@@ -59,3 +59,17 @@ test('addonBase strips manifest and stremio scheme', () => {
   assert.equal(addonBase('stremio://torrentio.strem.fun/realdebrid=abc/manifest.json'), 'https://torrentio.strem.fun/realdebrid=abc');
   assert.equal(addonBase('https://x.example/abc/manifest.json/'), 'https://x.example/abc');
 });
+
+test('preferred keywords (e.g. Superfan) win over resolution, then resolution decides among them', () => {
+  const list = [
+    s('[RD+] T\n1080p', 'The.Office.US.S02E01.1080p.WEB-DL'),
+    s('[RD+] T\n720p', 'The.Office.US.S02E01.Superfan.Episodes.720p.PCOK.WEB-DL'),
+    s('[RD+] T\n480p', 'The Office S02E01 SUPERFAN 480p'),
+  ];
+  const ranked = rankStreams(list, { resolution: 1080, fallback: 'lower', options: {} }, ['Superfan']);
+  assert.deepEqual(ranked.map((r) => r.resolution), [720, 480, 1080]);
+  assert.equal(ranked[0].preferred, true);
+  assert.equal(ranked[2].preferred, false);
+  // Without preferences the plain 1080p release is first again.
+  assert.equal(rankStreams(list, { resolution: 1080, options: {} })[0].resolution, 1080);
+});

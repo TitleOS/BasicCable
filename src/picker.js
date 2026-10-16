@@ -48,12 +48,17 @@ export function resolutionOrder(target, fallback = 'lower') {
   return fallback === 'higher' ? [target, ...higher, ...lower] : [target, ...lower, ...higher];
 }
 
-/** Rank playable debrid streams for a channel. Returns candidates best-first. */
-export function rankStreams(streams, channel) {
+/**
+ * Rank playable debrid streams for a channel. Returns candidates best-first.
+ * `prefer` lists words (e.g. "Superfan") that put a release ahead of everything else, resolution included;
+ * among preferred releases the usual resolution rules still apply.
+ */
+export function rankStreams(streams, channel, prefer = []) {
   const order = resolutionOrder(channel.resolution || 1080, channel.fallback);
   const opts = channel.options || {};
   const exclude = (opts.excludeKeywords || []).map((k) => k.trim().toLowerCase()).filter(Boolean);
   const avoidDV = opts.avoidDolbyVision !== false;
+  const preferred = prefer.map((k) => String(k).trim().toLowerCase()).filter(Boolean);
 
   const out = [];
   streams.forEach((s, i) => {
@@ -63,6 +68,7 @@ export function rankStreams(streams, channel) {
     if (JUNK.test(text) || JUNK_CASED.test(text)) return;
     const lower = text.toLowerCase();
     if (exclude.some((k) => lower.includes(k))) return;
+    const isPreferred = preferred.some((k) => lower.includes(k));
     const resolution = parseResolution(text);
     const rank = resolution ? order.indexOf(resolution) : order.length;
     const dv = DOLBY_VISION.test(text) && !/\bhdr10\b/i.test(text);
@@ -75,7 +81,8 @@ export function rankStreams(streams, channel) {
       size: parseSize(text),
       cached: CACHED.test(text),
       addon: s._addon,
-      score: [rank, avoidDV && dv ? 1 : 0, CACHED.test(text) ? 0 : 1, i],
+      preferred: isPreferred,
+      score: [isPreferred ? 0 : 1, rank, avoidDV && dv ? 1 : 0, CACHED.test(text) ? 0 : 1, i],
     });
   });
   out.sort((a, b) => {
@@ -108,11 +115,16 @@ export async function findStreams(item, channel, { fresh = false } = {}) {
     if (r.status === 'fulfilled') streams.push(...r.value);
     else log.warn(`stream addon #${i + 1} failed for ${item.video_id}: ${r.reason?.message}`);
   });
-  const candidates = rankStreams(streams, channel);
+  const candidates = rankStreams(streams, channel, store.getSettings().preferKeywords || []);
   log.info(`streams for ${item.video_id}: ${streams.length} found, ${candidates.length} playable` +
     (candidates[0] ? `, best ${candidates[0].resolution || '?'}p` : ''));
   cache.set(key, { at: Date.now(), candidates });
   return candidates;
+}
+
+/** Channel or ranking settings changed: rank again next time. */
+export function clearStreams(channelId = null) {
+  for (const key of cache.keys()) if (channelId == null || key.startsWith(`${channelId}|`)) cache.delete(key);
 }
 
 export function forgetStream(item, channel, url) {

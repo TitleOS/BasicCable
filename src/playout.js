@@ -3,7 +3,8 @@ import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { config, log } from './config.js';
 import { store } from './db.js';
-import { findStreams, forgetStream } from './picker.js';
+import { headerArgs } from './probe.js';
+import { prepareStream, dropPrepared } from './prefetch.js';
 import { buildChannel, itemLabel } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
 
@@ -44,34 +45,6 @@ const FONT_CANDIDATES = [
   'C:/Windows/Fonts/arial.ttf',
 ].filter(Boolean);
 const slateFont = FONT_CANDIDATES.find((f) => { try { return fs.statSync(f).isFile(); } catch { return false; } });
-
-function headerArgs(headers) {
-  if (!headers || !Object.keys(headers).length) return [];
-  return ['-headers', Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join('')];
-}
-
-/** ffprobe a remote file: duration plus audio tracks. Also our "does this debrid link work" check. */
-export function probe(url, headers) {
-  return new Promise((resolve) => {
-    const args = ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-rw_timeout', '20000000', ...headerArgs(headers), url];
-    execFile(config.ffprobe, args, { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
-      if (err) return resolve(null);
-      try {
-        const j = JSON.parse(stdout);
-        const streams = j.streams || [];
-        if (!streams.some((s) => s.codec_type === 'video')) return resolve(null);
-        resolve({
-          duration: Number(j.format?.duration) || null,
-          video: streams.find((s) => s.codec_type === 'video'),
-          audio: streams.filter((s) => s.codec_type === 'audio'),
-          subtitles: streams.filter((s) => s.codec_type === 'subtitle'),
-        });
-      } catch {
-        resolve(null);
-      }
-    });
-  });
-}
 
 function pickAudio(audio, lang) {
   if (!audio.length) return null;
@@ -160,38 +133,34 @@ class ChannelRunner {
     if (!channel) { this.stop(); return 'failed'; }
     this.setStatus({ state: 'resolving', item: { ...item, label: itemLabel(item) }, stream: null, message: '' });
 
-    let candidates;
-    try {
-      candidates = await findStreams(item, channel);
-    } catch (e) {
-      this.setStatus({ state: 'error', message: e.message });
-      log.warn(`channel ${channel.number}: ${e.message}`);
-      return 'failed';
-    }
-    if (!candidates.length) {
+    // Normally the prefetcher has already picked and probed a file, so this returns at once.
+    const t0 = Date.now();
+    const prepare = async () => {
+      try {
+        return await prepareStream(item, channel);
+      } catch (e) {
+        this.setStatus({ state: 'error', message: e.message });
+        log.warn(`channel ${channel.number}: ${e.message}`);
+        return undefined;
+      }
+    };
+    let prep = await prepare();
+    if (prep === undefined) return 'failed';
+    if (!prep) {
       this.setStatus({ state: 'error', message: 'No cached debrid stream found' });
       return 'failed';
     }
+    const waited = Date.now() - t0;
 
-    // Warm the cache for whatever comes next so the hand-over is quick.
+    // Warm up whatever comes next so the hand-over is quick.
     const next = store.epgAfter(this.channelId, item.start);
-    if (next) findStreams(next, channel).catch(() => {});
+    if (next) prepareStream(next, channel).catch(() => {});
 
-    for (const cand of candidates.slice(0, 5)) {
+    for (let attempt = 0; prep && attempt < 5; attempt++) {
       if (this.stopped) return 'done';
-      const info = await probe(cand.url, cand.headers);
-      if (!info) {
-        log.info(`channel ${channel.number}: stream did not probe, trying next (${cand.label.slice(0, 80)})`);
-        forgetStream(item, channel, cand.url);
-        continue;
-      }
-      if (info.duration && info.duration < 90 && item.end - item.start > 5 * 60000) {
-        // Debrid "downloading" placeholder clips are short; skip them.
-        forgetStream(item, channel, cand.url);
-        continue;
-      }
-      // Resolving and probing took a while; compute the live position now. An item that starts early
-      // (the previous file ran short) plays from 0 and may run past its slot until its scheduled end.
+      const { cand, info } = prep;
+      // Compute the live position now. An item that starts early (the previous file ran short) plays from 0
+      // and may run past its slot until its scheduled end.
       const startAt = Math.max(0, (Date.now() - item.start) / 1000);
       const limit = Math.max(5, (item.end - Date.now()) / 1000);
       if (info.duration && startAt >= info.duration - 3) return 'done'; // we're in the padding after it ended
@@ -207,12 +176,16 @@ class ChannelRunner {
       }
       if (subs) this.status.stream.subtitles = `${subs.stream.tags?.title || subs.stream.tags?.language || 'track ' + subs.index} (${subs.delivery === 'vtt' ? 'selectable' : 'burned in'})`;
       log.info(`channel ${channel.number}: playing ${itemLabel(item)} from ${Math.round(startAt)}s @ ${info.video?.height || '?'}p` +
-        (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''})` : ''));
+        (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''})` : '') +
+        (attempt === 0 ? (waited < 200 ? ', stream was prepared ahead' : `, stream picked in ${(waited / 1000).toFixed(1)}s`) : ''));
       const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs), { vtt: subs?.delivery === 'vtt' });
       if (this.stopped) return 'done';
       if (produced.code === 0) return 'done';
       if (produced.segments > 0) return 'retry';
-      forgetStream(item, channel, cand.url);
+      // It never started (expired link, dead host): drop it and take the next candidate.
+      dropPrepared(item, channel, cand.url);
+      prep = await prepare();
+      if (prep === undefined) return 'failed';
     }
     this.setStatus({ state: 'error', message: 'Every candidate stream failed to play' });
     return 'failed';

@@ -4,6 +4,7 @@ import { send, baseUrl, clientIp, HttpError } from './http.js';
 import { itemLabel } from './scheduler.js';
 import { getRunner, peekRunner, tuneIn, mayWatch } from './playout.js';
 import { findStreams } from './picker.js';
+import { preparedFor } from './prefetch.js';
 
 const PREFIX = 'streamtube:';
 const CATALOG_ID = 'streamtube-channels';
@@ -190,7 +191,7 @@ export function registerAddon(router) {
     const channel = store.getChannel(id);
     const item = channel && store.get('SELECT * FROM epg WHERE id = ? AND channel_id = ?', Number(epgId), channel.id);
     if (!item) throw new HttpError(404, 'That program is no longer in the guide');
-    const [best] = await findStreams(item, channel);
+    const best = preparedFor(item, channel)?.cand || (await findStreams(item, channel))[0];
     if (!best) throw new HttpError(404, 'No cached debrid stream found');
     send(res, 302, '', { location: best.url });
   });

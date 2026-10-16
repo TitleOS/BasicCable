@@ -8,7 +8,7 @@ import { DateTime } from 'luxon';
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'st-sched-'));
 process.env.TZ = 'America/New_York';
 const { store } = await import('../src/db.js');
-const { buildChannel, slotOccurrences } = await import('../src/scheduler.js');
+const { buildChannel, slotOccurrences, extendItem } = await import('../src/scheduler.js');
 const { globToRegExp, parseRuntime, playableEpisodes } = await import('../src/metadata.js');
 
 const ZONE = 'America/New_York';
@@ -100,4 +100,26 @@ test('rebuilding keeps the current item and rewinds episode cursors', async () =
   assert.equal(after[0].id, before[0].id, 'on-air item survives');
   assert.deepEqual(after.slice(0, 10).map((r) => r.video_id), before.slice(0, 10).map((r) => r.video_id));
   assertContiguous(after);
+});
+
+test('extendItem gives an upcoming item its real length and pushes the rest of the guide back', async () => {
+  const ch = store.createChannel({ name: 'Extend', round_minutes: 5 });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt001', name: 'Sitcom' });
+  await buildChannel(ch.id);
+  const now = Date.now();
+  const before = store.epgRange(ch.id, now, Infinity);
+  const target = before.find((r) => r.start > now);
+  const onAir = store.epgAt(ch.id, now);
+  // A 31-minute "Superfan" file in a 25-minute slot -> 35 minutes with 5-minute rounding.
+  assert.equal(await extendItem(ch.id, target.id, target.start + 35 * 60e3), true);
+  const after = store.epgRange(ch.id, 0, Infinity);
+  const row = after.find((r) => r.id === target.id);
+  assert.equal(row.end - row.start, 35 * 60e3);
+  assertContiguous(after);
+  // The next item now starts where the longer one ends, and continues the episode order.
+  const nextRow = after[after.indexOf(row) + 1];
+  assert.equal(nextRow.start, row.end);
+  assert.equal(nextRow.video_id, before[before.indexOf(target) + 1].video_id);
+  // Items already on air are never changed.
+  if (onAir) assert.equal(await extendItem(ch.id, onAir.id, onAir.end + 10 * 60e3), false);
 });

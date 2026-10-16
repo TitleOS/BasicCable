@@ -9,6 +9,8 @@ You build channels in a web UI that runs in a container on your network. Each ch
 - **Wildcards.** `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. You can untick any match. New titles that match are picked up each day.
 - **English subtitles.** StreamTube looks for an English SDH track in the file, then the first English or unlabelled one. Text subtitles become a selectable caption track. Image subtitles (Blu-ray PGS) are burned into the picture. See [Subtitles](#subtitles).
 - **Target resolution per channel.** The picker uses the exact resolution when it can. Otherwise it takes the next best: by default the nearest lower one, or optionally the nearest higher one. It only uses cached, direct debrid links, and it skips CAM/TS releases, Dolby Vision-only files (optional) and any keywords you list.
+- **Preferred releases.** Releases whose names contain a preferred word win over everything else, resolution included. The default is `Superfan`, so The Office plays its extended Superfan episodes when an addon has them.
+- **Streams prepared ahead.** About 10 minutes before each program airs, StreamTube asks your addons, picks the file and checks it. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore.** Export your channels, pools, wildcards, slots and each show's progress as one JSON file, and import it into another install. See [Backup and restore](#backup-and-restore).
 - **One stream per device.** Each viewer IP watches one channel at a time, so channel surfing doesn't leave old channels running. See [Stream cap](#stream-cap).
 - **Live guide.** The web UI shows a ticking clock, a now-playing strip with progress bars and an EPG grid. Click any program to see which stream it would pick.
@@ -65,7 +67,7 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 
 ## Scheduling details
 
-- **Runtimes** come from Cinemeta, which gives a single per-series value such as "21 min". Real files differ by a minute or two, so each channel rounds runtimes up (5 minutes by default). If a file ends early, the next program starts early and catches back up to the guide. If a file runs long, it's cut at its scheduled end. Pick a larger rounding if you see endings get clipped.
+- **Runtimes** come from Cinemeta, which gives a single per-series value such as "21 min". Real files differ by a minute or two, so each channel rounds runtimes up (5 minutes by default). If a file ends early, the next program starts early and catches back up to the guide. If a file runs long, it's cut at its scheduled end. Pick a larger rounding if you see endings get clipped. With stream prefetching on, files that run longer, such as Superfan cuts, are caught before they air and given their full length.
 - **Slots win.** Auto-fill items never run into a slot. Leftover time at the end of a block goes to the previous item if it's under 10 minutes. Otherwise a fitting item from the pool fills it. An episode that has to be cut short airs again next time instead of being skipped.
 - **Episode memory** is per channel and per show, and is shared between the pool and slots. Specials (season 0) and unreleased episodes are skipped.
 - Editing a channel replans everything after the program that's on now. What's airing keeps playing.
@@ -112,6 +114,20 @@ Guides are rebuilt in the background after an import. A bad file is rejected bef
 
 The same thing is available from the API: `GET /api/backup` (add `?settings=1` to include settings) and `POST /api/restore` with `{"backup": <file contents>, "replace": false, "includeSettings": false}`.
 
+## Fast tune-in
+
+Without help, opening a channel waits for every stream addon to answer, then checks the chosen file. With slow addons that adds several seconds. So once a minute StreamTube prepares, on every enabled channel, whatever is on now and whatever starts in the next **Prepare streams ahead** minutes (Settings, default 10):
+
+1. It asks the addons for streams and ranks them.
+2. It checks the top file is reachable and real (not a debrid "downloading" placeholder).
+3. It keeps that choice for up to 2 hours.
+
+Opening a channel then starts ffmpeg straight away. The log line for the program says `stream was prepared ahead`. In testing with addons that took 5 seconds to answer, tune-in dropped from 6.2s to 1.0s.
+
+Preparing also reveals the file's real length. If it's more than a minute longer than its guide slot, the slot is stretched to fit (rounded up per channel), and the rest of the guide moves back. A Superfan episode in a 25-minute slot gets 30 or 35 minutes instead of being cut off. Only programs that haven't started yet are changed. If a stretched program runs into a time slot, that slot starts late by the same amount.
+
+The cost is one addon lookup and one file check per program, made even when nobody is watching. Set **Prepare streams ahead** to 0 to turn it off.
+
 ## Stream cap
 
 With **One stream per viewer IP** on (Settings, on by default), each device watches one channel at a time:
@@ -153,7 +169,7 @@ npm test
 `test/mock-addon.js` is a fake debrid stream addon that serves one local video file with HTTP Range support, for testing playback without a debrid account:
 
 ```bash
-SAMPLE_FILE=/path/to/video.mkv node test/mock-addon.js
+SAMPLE_FILE=/path/to/video.mkv node test/mock-addon.js   # MOCK_DELAY_MS=5000 makes it answer slowly, like a real addon
 ```
 
 Then add `http://localhost:7099/manifest.json` as a stream addon.
