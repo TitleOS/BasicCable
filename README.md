@@ -13,6 +13,7 @@ You build channels in a web UI that runs in a container on your network. Each ch
 - **Streams prepared ahead.** About 10 minutes before each program airs, StreamTube asks your addons, picks the file and checks it. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore.** Export your channels, pools, wildcards, slots and each show's progress as one JSON file, and import it into another install. See [Backup and restore](#backup-and-restore).
 - **One stream per device.** Each viewer IP watches one channel at a time, so channel surfing doesn't leave old channels running. See [Stream cap](#stream-cap).
+- **Manage it by asking.** A built-in MCP server lets Claude (or any MCP client) create and edit channels from plain requests like "make a Saturday-morning cartoons channel". See [MCP server](#mcp-server).
 - **Live guide.** The web UI shows a ticking clock, a now-playing strip with progress bars and an EPG grid. Click any program to see which stream it would pick.
 - **Other players.** Besides the Stremio addon you get an M3U playlist and an XMLTV guide for VLC, Kodi, TiviMate, Jellyfin, Plex and similar apps.
 
@@ -163,6 +164,45 @@ The cap covers the live channel streams. **Start over** links go straight to you
 
 If StreamTube is behind a reverse proxy, set `TRUST_PROXY=1`. Otherwise every viewer shares the proxy's IP and counts as one device.
 
+## MCP server
+
+StreamTube includes an [MCP](https://modelcontextprotocol.io) server at `/mcp` (Streamable HTTP). With it, an assistant such as Claude Code can manage everything from plain-language requests:
+
+> Make a channel called Saturday Cartoons with Animaniacs, Pinky and the Brain and Batman: The Animated Series, 720p, and put Pokémon on Saturdays 8 to 10am.
+>
+> Set every channel to skip REMUX releases.
+>
+> What's on channel 4, and why is it only 480p?
+>
+> Skip whatever's on Adult Swim.
+
+**Connect Claude Code:**
+
+```bash
+claude mcp add --transport http streamtube http://<server>:7000/mcp
+```
+
+If you set `ADMIN_PASSWORD`, add `--header "Authorization: Bearer <password>"` (Basic auth works too). This repo's `.mcp.json` registers the server for Claude Code sessions opened here. It reads the address from `STREAMTUBE_MCP_URL` and the password from `STREAMTUBE_TOKEN` if they're set.
+
+| Area | Tools |
+|---|---|
+| Look around | `streamtube_list_channels`, `streamtube_get_channel`, `streamtube_get_guide`, `streamtube_whats_on`, `streamtube_server_status` |
+| Channels | `streamtube_create_channel` (settings, pool and slots in one call), `streamtube_update_channel`, `streamtube_bulk_update_channels`, `streamtube_delete_channel` |
+| Pool & slots | `streamtube_add_to_pool`, `streamtube_remove_from_pool`, `streamtube_set_wildcard_exclusions`, `streamtube_add_slots`, `streamtube_remove_slots` |
+| Titles | `streamtube_search_titles`, `streamtube_preview_wildcard` |
+| Playback | `streamtube_skip_current`, `streamtube_check_streams`, `streamtube_rebuild_guide` |
+| Addons & settings | `streamtube_get_settings` (addon keys hidden unless asked), `streamtube_add_stream_addon`, `streamtube_remove_stream_addon`, `streamtube_test_stream_addons`, `streamtube_update_settings` |
+| Backups | `streamtube_export_backup`, `streamtube_import_backup` |
+
+The tools take things the way people say them:
+
+- **Channels:** a number or a name ("4", "adult swim").
+- **Titles:** a name, optionally with `movie:` / `show:` or a year ("Heat (1995)"), an IMDb id, or a wildcard ("Star Trek*").
+- **Days:** "weeknights", "mon-fri", "sat, sun".
+- **Times and lengths:** "8pm", "20:00", "1h30m".
+
+Every change reports exactly what each title matched, along with the runner-up matches. A name with no close match is refused with suggestions instead of being guessed. Browser requests from other websites are rejected.
+
 ## Outputs
 
 | URL | |
@@ -195,5 +235,11 @@ SAMPLE_FILE=/path/to/video.mkv node test/mock-addon.js   # MOCK_DELAY_MS=5000 ma
 ```
 
 Then add `http://localhost:7099/manifest.json` as a stream addon.
+
+`test/mcp-smoke.js` drives every MCP tool against a running server. It creates a test channel and deletes it again, and needs internet access for Cinemeta:
+
+```bash
+MCP_URL=http://localhost:7000/mcp ADDON_URL=http://localhost:7099/manifest.json node test/mcp-smoke.js
+```
 
 Requires Node 22.13 or newer (it uses the built-in `node:sqlite`) and ffmpeg 6.1 or newer on the PATH (older versions work but take longer to tune in). Use ffmpeg 7.x if you want subtitles; see [Subtitles](#subtitles).

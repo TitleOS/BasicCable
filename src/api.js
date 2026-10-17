@@ -215,6 +215,126 @@ async function importBackup(data, { replace = false, includeSettings = false } =
   return { imported: created.length, replaced: replace, settings: !!(includeSettings && data.settings) };
 }
 
+// ---------------------------------------------------------------------------
+// Operations shared by the REST API (web UI) and the MCP tools
+
+async function createChannelOp(b) {
+  return store.createChannel(channelInput({ resolution: store.getSettings().defaultResolution, options: {}, ...b }));
+}
+
+/** Apply a settings patch to a channel, then rebuild its guide or restart playback as needed. */
+async function updateChannelOp(cur, b) {
+  const c = store.updateChannel(cur.id, channelInput(b, true));
+  const scheduleChanged = ['fill_mode', 'round_minutes'].some((k) => b[k] !== undefined && b[k] !== cur[k]) ||
+    (b.options && !!b.options.includeSpecials !== !!cur.options.includeSpecials);
+  if (b.resolution !== undefined || b.options || b.fallback !== undefined) {
+    clearStreams(c.id);
+    clearPrepared(c.id);
+  }
+  if (scheduleChanged) await rebuild(c.id);
+  else if (b.resolution !== undefined || b.options || b.fallback !== undefined || b.enabled !== undefined) stopRunner(c.id);
+  return store.getChannel(c.id);
+}
+
+function deleteChannelOp(c) {
+  stopRunner(c.id);
+  store.deleteChannel(c.id);
+}
+
+/** Add a show, movie or wildcard to a channel's auto-fill pool. `rebuildGuide: false` lets callers batch. */
+async function addSourceOp(c, spec, { rebuildGuide = true } = {}) {
+  const s = contentInput(spec);
+  if (s.kind === 'pool') throw new HttpError(400, 'Pick a show, movie or wildcard');
+  if (s.kind === 'wildcard' && spec.options?.excluded) s.options.excluded = spec.options.excluded.map(String);
+  const dup = store.listSources(c.id).find((x) => x.kind === s.kind && x.ref.toLowerCase() === s.ref.toLowerCase());
+  if (dup) throw new HttpError(409, `${s.name} is already in this channel`);
+  const created = store.addSource(c.id, s);
+  if (created.kind === 'wildcard') await resolveWildcard(created, { force: true });
+  if (rebuildGuide) await rebuild(c.id);
+  return store.getSource(created.id);
+}
+
+async function updateSourceOp(c, s, b, { rebuildGuide = true } = {}) {
+  const options = { ...s.options };
+  if (Array.isArray(b.excluded)) options.excluded = b.excluded.map(String);
+  store.updateSourceOptions(s.id, options);
+  if (b.refresh) await resolveWildcard(store.getSource(s.id), { force: true });
+  if (rebuildGuide) await rebuild(c.id);
+  return store.getSource(s.id);
+}
+
+async function deleteSourceOp(c, sourceId, { rebuildGuide = true } = {}) {
+  store.deleteSource(sourceId);
+  if (rebuildGuide) await rebuild(c.id);
+}
+
+async function addSlotOp(c, b, { rebuildGuide = true } = {}) {
+  const slot = store.addSlot(c.id, slotInput(b));
+  if (rebuildGuide) await rebuild(c.id);
+  return slot;
+}
+
+async function updateSlotOp(c, s, b, { rebuildGuide = true } = {}) {
+  const slot = store.updateSlot(s.id, slotInput(b));
+  if (rebuildGuide) await rebuild(c.id);
+  return slot;
+}
+
+async function deleteSlotOp(c, slotId, { rebuildGuide = true } = {}) {
+  store.deleteSlot(slotId);
+  if (rebuildGuide) await rebuild(c.id);
+}
+
+/** Try a stream addon against a well-known episode and report what the picker would accept. */
+async function testAddonOp(url) {
+  const base = addonBase(url);
+  const out = { base: base.replace(/^(https?:\/\/[^/]+).*/, '$1/…') };
+  try {
+    const m = await fetchJson(`${base}/manifest.json`);
+    out.name = m.name;
+    out.resources = (m.resources || []).map((r) => (typeof r === 'string' ? r : r.name));
+  } catch (e) {
+    throw new HttpError(400, `Could not load the manifest: ${e.message}`);
+  }
+  const data = await fetchJson(`${base}/stream/series/tt1442437:1:1.json`, { timeoutMs: 30000 }).catch((e) => ({ error: e.message }));
+  const streams = data.streams || [];
+  const ranked = rankStreams(streams, { resolution: 1080, fallback: 'lower', options: {} }, store.getSettings().preferKeywords || []);
+  out.total = streams.length;
+  out.withUrl = streams.filter((s) => s.url).length;
+  out.playable = ranked.length;
+  out.sample = ranked.slice(0, 3).map((c) => ({ resolution: c.resolution, cached: c.cached, label: c.label.slice(0, 140) }));
+  out.error = data.error;
+  if (!out.withUrl && out.total) out.hint = 'This addon only returns torrents. Configure it with your debrid service (the debrid key goes into the addon URL) so it returns direct links.';
+  else if (out.withUrl && !out.playable) out.hint = 'This addon returns direct links, but none looked cached or usable. If its labels mark cached results differently, StreamTube may need to learn that format.';
+  return out;
+}
+
+/** Ranked debrid streams for a guide item. */
+async function channelStreamsOp(c, item, { fresh = false } = {}) {
+  let candidates = [];
+  let error = null;
+  try {
+    candidates = await findStreams(item, c, { fresh });
+  } catch (e) {
+    error = e.message;
+  }
+  return {
+    item: { ...item, label: itemLabel(item) },
+    target: c.resolution,
+    fallback: c.fallback,
+    error,
+    candidates: candidates.slice(0, 20).map((x) => ({ resolution: x.resolution, cached: x.cached, preferred: x.preferred, size: x.size, addon: x.addon, label: x.label })),
+  };
+}
+
+export const ops = {
+  channelInput, slotInput, contentInput, normTypes, rebuild, applySettings, exportBackup, importBackup, channelDetail,
+  createChannel: createChannelOp, updateChannel: updateChannelOp, deleteChannel: deleteChannelOp,
+  addSource: addSourceOp, updateSource: updateSourceOp, deleteSource: deleteSourceOp,
+  addSlot: addSlotOp, updateSlot: updateSlotOp, deleteSlot: deleteSlotOp,
+  testAddon: testAddonOp, channelStreams: channelStreamsOp,
+};
+
 export function registerApi(router) {
   router.get('/api/info', async (req, res) => {
     const caps = await ffmpegCaps();
@@ -243,26 +363,7 @@ export function registerApi(router) {
   router.post('/api/test-addon', async (req, res) => {
     const { url } = await readJson(req);
     if (!url) throw new HttpError(400, 'Paste an addon URL');
-    const base = addonBase(url);
-    const out = { base: base.replace(/^(https?:\/\/[^/]+).*/, '$1/…') };
-    try {
-      const m = await fetchJson(`${base}/manifest.json`);
-      out.name = m.name;
-      out.resources = (m.resources || []).map((r) => (typeof r === 'string' ? r : r.name));
-    } catch (e) {
-      throw new HttpError(400, `Could not load the manifest: ${e.message}`);
-    }
-    const data = await fetchJson(`${base}/stream/series/tt1442437:1:1.json`, { timeoutMs: 30000 }).catch((e) => ({ error: e.message }));
-    const streams = data.streams || [];
-    const ranked = rankStreams(streams, { resolution: 1080, fallback: 'lower', options: {} }, store.getSettings().preferKeywords || []);
-    out.total = streams.length;
-    out.withUrl = streams.filter((s) => s.url).length;
-    out.playable = ranked.length;
-    out.sample = ranked.slice(0, 3).map((c) => ({ resolution: c.resolution, cached: c.cached, label: c.label.slice(0, 140) }));
-    out.error = data.error;
-    if (!out.withUrl && out.total) out.hint = 'This addon only returns torrents. Configure it with your debrid service (the debrid key goes into the addon URL) so it returns direct links.';
-    else if (out.withUrl && !out.playable) out.hint = 'This addon returns direct links, but none looked cached or usable. If its labels mark cached results differently, StreamTube may need to learn that format.';
-    send(res, 200, out);
+    send(res, 200, await testAddonOp(url));
   }, A);
 
   // --- metadata search
@@ -288,29 +389,15 @@ export function registerApi(router) {
   // --- channels
   router.get('/api/channels', (req, res) => send(res, 200, store.listChannels().map(channelDetail)), A);
   router.post('/api/channels', async (req, res) => {
-    const b = await readJson(req);
-    const input = channelInput({ resolution: store.getSettings().defaultResolution, options: {}, ...b });
-    const c = store.createChannel(input);
-    send(res, 201, channelDetail(c));
+    send(res, 201, channelDetail(await createChannelOp(await readJson(req))));
   }, A);
   router.get('/api/channels/:id', (req, res, { id }) => send(res, 200, channelDetail(requireChannel(id))), A);
   router.put('/api/channels/:id', async (req, res, { id }) => {
     const cur = requireChannel(id);
-    const b = await readJson(req);
-    const c = store.updateChannel(cur.id, channelInput(b, true));
-    const scheduleChanged = ['fill_mode', 'round_minutes'].some((k) => b[k] !== undefined && b[k] !== cur[k]) ||
-      (b.options && !!b.options.includeSpecials !== !!cur.options.includeSpecials);
-    if (b.resolution !== undefined || b.options || b.fallback !== undefined) {
-      clearStreams(c.id);
-      clearPrepared(c.id);
-    }
-    if (scheduleChanged) await rebuild(c.id);
-    else if (b.resolution !== undefined || b.options || b.fallback !== undefined || b.enabled !== undefined) stopRunner(c.id);
-    send(res, 200, channelDetail(c));
+    send(res, 200, channelDetail(await updateChannelOp(cur, await readJson(req))));
   }, A);
   router.delete('/api/channels/:id', (req, res, { id }) => {
-    stopRunner(id);
-    store.deleteChannel(id);
+    deleteChannelOp(requireChannel(id));
     send(res, 200, { ok: true });
   }, A);
   router.post('/api/channels/:id/rebuild', async (req, res, { id }) => {
@@ -322,53 +409,31 @@ export function registerApi(router) {
   // --- auto-fill pool
   router.post('/api/channels/:id/sources', async (req, res, { id }) => {
     const c = requireChannel(id);
-    const s = contentInput(await readJson(req));
-    if (s.kind === 'pool') throw new HttpError(400, 'Pick a show, movie or wildcard');
-    const dup = store.listSources(c.id).find((x) => x.kind === s.kind && x.ref.toLowerCase() === s.ref.toLowerCase());
-    if (dup) throw new HttpError(409, `${s.name} is already in this channel`);
-    const created = store.addSource(c.id, s);
-    if (created.kind === 'wildcard') await resolveWildcard(created, { force: true });
-    await rebuild(c.id);
-    send(res, 201, store.getSource(created.id));
+    send(res, 201, await addSourceOp(c, await readJson(req)));
   }, A);
   router.put('/api/channels/:id/sources/:sid', async (req, res, { id, sid }) => {
     const c = requireChannel(id);
     const s = store.getSource(sid);
     if (!s || s.channel_id !== c.id) throw new HttpError(404, 'Not found');
-    const b = await readJson(req);
-    const options = { ...s.options };
-    if (Array.isArray(b.excluded)) options.excluded = b.excluded.map(String);
-    store.updateSourceOptions(s.id, options);
-    if (b.refresh) await resolveWildcard(store.getSource(s.id), { force: true });
-    await rebuild(c.id);
-    send(res, 200, store.getSource(s.id));
+    send(res, 200, await updateSourceOp(c, s, await readJson(req)));
   }, A);
   router.delete('/api/channels/:id/sources/:sid', async (req, res, { id, sid }) => {
-    const c = requireChannel(id);
-    store.deleteSource(sid);
-    await rebuild(c.id);
+    await deleteSourceOp(requireChannel(id), sid);
     send(res, 200, { ok: true });
   }, A);
 
   // --- time slots
   router.post('/api/channels/:id/slots', async (req, res, { id }) => {
-    const c = requireChannel(id);
-    const slot = store.addSlot(c.id, slotInput(await readJson(req)));
-    await rebuild(c.id);
-    send(res, 201, slot);
+    send(res, 201, await addSlotOp(requireChannel(id), await readJson(req)));
   }, A);
   router.put('/api/channels/:id/slots/:sid', async (req, res, { id, sid }) => {
     const c = requireChannel(id);
     const s = store.getSlot(sid);
     if (!s || s.channel_id !== c.id) throw new HttpError(404, 'Not found');
-    const slot = store.updateSlot(s.id, slotInput(await readJson(req)));
-    await rebuild(c.id);
-    send(res, 200, slot);
+    send(res, 200, await updateSlotOp(c, s, await readJson(req)));
   }, A);
   router.delete('/api/channels/:id/slots/:sid', async (req, res, { id, sid }) => {
-    const c = requireChannel(id);
-    store.deleteSlot(sid);
-    await rebuild(c.id);
+    await deleteSlotOp(requireChannel(id), sid);
     send(res, 200, { ok: true });
   }, A);
 
@@ -398,20 +463,7 @@ export function registerApi(router) {
     const epgId = Number(u.searchParams.get('item'));
     const item = epgId ? store.get('SELECT * FROM epg WHERE id = ? AND channel_id = ?', epgId, c.id) : store.epgAt(c.id, Date.now());
     if (!item) throw new HttpError(404, 'Nothing scheduled');
-    let candidates = [];
-    let error = null;
-    try {
-      candidates = await findStreams(item, c, { fresh: u.searchParams.get('fresh') === '1' });
-    } catch (e) {
-      error = e.message;
-    }
-    send(res, 200, {
-      item: { ...item, label: itemLabel(item) },
-      target: c.resolution,
-      fallback: c.fallback,
-      error,
-      candidates: candidates.slice(0, 20).map((x) => ({ resolution: x.resolution, cached: x.cached, preferred: x.preferred, size: x.size, addon: x.addon, label: x.label })),
-    });
+    send(res, 200, await channelStreamsOp(c, item, { fresh: u.searchParams.get('fresh') === '1' }));
   }, A);
 
   router.get('/api/status', (req, res) => send(res, 200, { runners: runnerStatus() }), A);

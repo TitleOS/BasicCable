@@ -212,9 +212,20 @@ class ChannelRunner {
         (transcode ? ', re-encoding video' : '') +
         (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''})` : '') +
         (attempt === 0 ? (waited < 200 ? ', stream was prepared ahead' : `, stream picked in ${(waited / 1000).toFixed(1)}s`) : ''));
+      if (this.skipRequested) {
+        // Skipped while we were still getting the stream ready.
+        this.skipRequested = false;
+        return 'skipped';
+      }
       const t1 = Date.now();
       const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs, { transcode }), { vtt: subs?.delivery === 'vtt' });
       if (this.stopped) return 'done';
+      if (this.skipRequested) {
+        // Someone skipped this program; the guide already has its replacement.
+        this.skipRequested = false;
+        this.resume = null;
+        return 'skipped';
+      }
       // ffmpeg also exits cleanly when a debrid link dies (it sees an early end of file), so only call it
       // finished if it got to the end of the file or of the slot.
       const target = Math.min(info.duration || Infinity, startAt + limit);
@@ -451,6 +462,15 @@ export async function getRunner(channelId) {
 
 export function peekRunner(channelId) {
   return runners.get(Number(channelId));
+}
+
+/** Cut a playing channel over to what the guide now says is on (after the current item was replaced). */
+export function interruptRunner(channelId) {
+  const r = runners.get(Number(channelId));
+  if (!r || r.stopped) return false;
+  r.skipRequested = true;
+  if (r.proc) r.proc.kill('SIGKILL');
+  return true;
 }
 
 export function stopRunner(channelId) {

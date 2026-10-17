@@ -8,6 +8,7 @@ import { registerApi } from './api.js';
 import { startScheduler } from './scheduler.js';
 import { startReaper, ffmpegCaps, runnerStatus, stopRunner } from './playout.js';
 import { startPrefetcher } from './prefetch.js';
+import { mcpHandler } from './mcp.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -29,6 +30,18 @@ const server = http.createServer(async (req, res) => {
     if (res.statusCode >= 400) log.warn(line);
     else log.info(line);
   });
+  if (pathname === '/mcp') {
+    // MCP endpoint for assistants (Claude Code etc.). Same password as the web UI when one is set.
+    if (!checkAuth(req)) return send(res, 401, { error: 'Authentication required' }, { 'www-authenticate': 'Basic realm="StreamTube"' });
+    // Browsers send Origin: only pages served by StreamTube itself may call it, so another website can't drive it.
+    const origin = req.headers.origin;
+    if (origin) {
+      let sameOrigin = false;
+      try { sameOrigin = new URL(origin).host === req.headers.host; } catch { /* unparseable */ }
+      if (!sameOrigin) return send(res, 403, { error: 'Origin not allowed' });
+    }
+    return mcpHandler(req, res);
+  }
   if (req.method === 'OPTIONS') return send(res, 204, '');
   try {
     const m = router.match(req.method, pathname);

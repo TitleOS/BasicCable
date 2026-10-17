@@ -78,6 +78,8 @@ export function clientIp(req) {
 export function checkAuth(req) {
   if (!config.adminPassword) return true;
   const h = req.headers.authorization || '';
+  // "Bearer <password>" is easier to put in an MCP client's config than Basic auth.
+  if (h.startsWith('Bearer ')) return h.slice(7).trim() === config.adminPassword;
   if (!h.startsWith('Basic ')) return false;
   const [, pass] = Buffer.from(h.slice(6), 'base64').toString('utf8').split(/:(.*)/s);
   return pass === config.adminPassword;
