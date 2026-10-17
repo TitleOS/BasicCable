@@ -19,6 +19,11 @@ const EARLY_FAIL_SECONDS = 15; // ffmpeg dying sooner than this means the file i
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const BURN_PRESET = process.env.SUBTITLE_BURN_PRESET || 'veryfast';
 const EMPTY_VTT = 'WEBVTT\n\n';
+// ffmpeg writes WebVTT cue times on the same output timeline as the video (including -output_ts_offset), and
+// its MPEG-TS muxer puts that timeline's zero at 1.4s (126000 at 90 kHz). So cue time 0 always maps to 126000.
+// (Reading the first video timestamp instead is wrong after a seek: it lands on the keyframe before the seek
+// point, and with a timestamp offset or an MP4 source that is seconds away from cue zero.)
+const VTT_MPEGTS_ZERO = 126000;
 
 // ---------------------------------------------------------------------------
 // ffmpeg capabilities
@@ -75,7 +80,7 @@ class ChannelRunner {
     this.dir = path.join(config.hlsDir, `ch${this.channelId}-${Date.now().toString(36)}`);
     fs.mkdirSync(this.dir, { recursive: true });
     this.segments = []; // {name, duration, disc, seq, program, index}
-    this.programs = new Map(); // program number -> { vtt: bool, firstPts: Promise<number> }
+    this.programs = new Map(); // program number -> { vtt: bool }
     this.nextSeq = 0;
     this.program = 0;
     // Each program's timestamps continue from where the previous one ended, so players that ignore
@@ -409,26 +414,8 @@ class ChannelRunner {
     } catch {
       return EMPTY_VTT;
     }
-    const pts = await this.programStartPts(Number(m[1]));
     const body = text.replace(/^\uFEFF?WEBVTT[^\n]*\n(X-TIMESTAMP-MAP[^\n]*\n)?/, '');
-    return `WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:${pts},LOCAL:00:00:00.000\n${body}`;
-  }
-
-  /** MPEG-TS timestamp (90 kHz) where a program's WebVTT time zero lands, read from its first segment. */
-  programStartPts(n) {
-    const prog = this.programs.get(n);
-    if (!prog.firstPts) {
-      const first = path.join(this.dir, `p${n}_00000.ts`);
-      prog.firstPts = new Promise((resolve) => {
-        execFile(config.ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts,dts',
-          '-read_intervals', '%+#1', '-of', 'json', first], { timeout: 10000 }, (err, stdout) => {
-          let pts = 126000; // ffmpeg's MPEG-TS muxer starts at 1.4s by default
-          try { pts = Number(JSON.parse(stdout).packets[0].dts) || pts; } catch { /* keep default */ }
-          resolve(pts);
-        });
-      });
-    }
-    return prog.firstPts;
+    return `WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:${VTT_MPEGTS_ZERO},LOCAL:00:00:00.000\n${body}`;
   }
 
   segmentPath(name) {
