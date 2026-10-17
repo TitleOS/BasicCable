@@ -4,12 +4,18 @@ import { spawn, execFile } from 'node:child_process';
 import { config, log } from './config.js';
 import { store } from './db.js';
 import { headerArgs } from './probe.js';
-import { prepareStream, dropPrepared, skipUnplayable } from './prefetch.js';
+import { prepareStream, dropPrepared, skipUnplayable, preparedFor } from './prefetch.js';
 import { buildChannel, itemLabel } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
 
-const WINDOW = 6; // segments listed in the live playlist
-const KEEP_FILES = 30; // segment files kept on disk per channel
+// 6s segments: players start ~3 segments behind the live edge, so that's ~18s of cushion against slow debrid
+// reads. The playlist lists ~90s so a player that stalls can carry on where it was instead of being pushed
+// out of the window (which shows an error and jumps ahead).
+const SEGMENT_SECONDS = 6;
+const WINDOW = 15; // segments listed in the live playlist
+const KEEP_FILES = 25; // segment files kept on disk per channel
+const BURST_SECONDS = 20; // read this much ahead at the start so the first segments are ready at once
+const EARLY_FAIL_SECONDS = 15; // ffmpeg dying sooner than this means the file itself is the problem
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const BURN_PRESET = process.env.SUBTITLE_BURN_PRESET || 'veryfast';
 const EMPTY_VTT = 'WEBVTT\n\n';
@@ -72,6 +78,11 @@ class ChannelRunner {
     this.programs = new Map(); // program number -> { vtt: bool, firstPts: Promise<number> }
     this.nextSeq = 0;
     this.program = 0;
+    // Each program's timestamps continue from where the previous one ended, so players that ignore
+    // discontinuity tags (mpv/ffmpeg) never see time run backwards and mistake it for the end of the stream.
+    this.tsOffset = 0;
+    this.maxTarget = SEGMENT_SECONDS;
+    this.resume = null; // { itemId, at } after a mid-program drop: carry on from there
     this.lastAccess = Date.now();
     this.viewers = new Map(); // viewer ip -> last request time
     this.stopped = false;
@@ -120,7 +131,7 @@ class ChannelRunner {
       if (result === 'done') { lastItem = item; continue; }
       if (result === 'skipped') continue; // the guide now has a replacement at this spot
       fails++;
-      if (result === 'retry' && fails <= 3) continue; // link dropped mid-item: rejoin at the live offset
+      if (result === 'retry' && fails <= 3) continue; // link dropped mid-item: resume where it stopped
       // Keep the channel alive with a slate, retrying every minute, giving up on the item after a few tries.
       const remaining = item.end - Date.now();
       const slateMs = fails > 3 ? remaining : Math.min(remaining, 60000);
@@ -145,7 +156,18 @@ class ChannelRunner {
         return undefined;
       }
     };
-    let prep = await prepare();
+    let prep;
+    if (this.segments.length && !preparedFor(item, channel)) {
+      // Mid-session and the next program isn't ready: keep players fed with short "Up next" segments while we
+      // look, instead of letting the playlist freeze (players give up and drop back to their menus).
+      let settled = false;
+      const pending = prepare().then((r) => { settled = true; return r; });
+      await Promise.race([pending, sleep(1000)]);
+      while (!settled && !this.stopped) await this.playSlate(`Up next: ${itemLabel(item)}`, 'Getting the stream ready…', 4);
+      prep = await pending;
+    } else {
+      prep = await prepare();
+    }
     if (prep === undefined) return 'failed';
     if (!prep) {
       // Nothing playable: put another episode in its place (by the channel's rules) and play that instead.
@@ -159,12 +181,15 @@ class ChannelRunner {
     const next = store.epgAfter(this.channelId, item.start);
     if (next) prepareStream(next, channel).catch(() => {});
 
-    for (let attempt = 0; prep && attempt < 5; attempt++) {
+    let transcode = false;
+    for (let attempt = 0; prep && attempt < 6; attempt++) {
       if (this.stopped) return 'done';
       const { cand, info } = prep;
-      // Compute the live position now. An item that starts early (the previous file ran short) plays from 0
-      // and may run past its slot until its scheduled end.
-      const startAt = Math.max(0, (Date.now() - item.start) / 1000);
+      // Normally the live position. After a mid-program drop, where it stopped (nothing gets skipped; the end is
+      // trimmed instead). An item that starts early (the previous file ran short) plays from 0 and may run past
+      // its slot until its scheduled end.
+      const resumeAt = this.resume?.itemId === item.id ? this.resume.at : null;
+      const startAt = resumeAt ?? Math.max(0, (Date.now() - item.start) / 1000);
       const limit = Math.max(5, (item.end - Date.now()) / 1000);
       if (info.duration && startAt >= info.duration - 3) return 'done'; // we're in the padding after it ended
       this.setStatus({
@@ -178,35 +203,65 @@ class ChannelRunner {
         log.warn(`channel ${channel.number}: skipping subtitles, ffmpeg ${caps.version} can't pace them in real time (use ffmpeg 7.x)`);
       }
       if (subs) this.status.stream.subtitles = `${subs.stream.tags?.title || subs.stream.tags?.language || 'track ' + subs.index} (${subs.delivery === 'vtt' ? 'selectable' : 'burned in'})`;
-      log.info(`channel ${channel.number}: playing ${itemLabel(item)} from ${Math.round(startAt)}s @ ${info.video?.height || '?'}p` +
+      log.info(`channel ${channel.number}: ${resumeAt != null ? 'resuming' : 'playing'} ${itemLabel(item)} from ${Math.round(startAt)}s @ ${info.video?.height || '?'}p` +
+        (transcode ? ', re-encoding video' : '') +
         (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''})` : '') +
         (attempt === 0 ? (waited < 200 ? ', stream was prepared ahead' : `, stream picked in ${(waited / 1000).toFixed(1)}s`) : ''));
-      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs), { vtt: subs?.delivery === 'vtt' });
+      const t1 = Date.now();
+      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs, { transcode }), { vtt: subs?.delivery === 'vtt' });
       if (this.stopped) return 'done';
-      if (produced.code === 0) return 'done';
-      if (produced.segments > 0) return 'retry';
-      // It never started (expired link, dead host): drop it and take the next candidate.
+      // ffmpeg also exits cleanly when a debrid link dies (it sees an early end of file), so only call it
+      // finished if it got to the end of the file or of the slot.
+      const target = Math.min(info.duration || Infinity, startAt + limit);
+      if (produced.code === 0 && startAt + produced.seconds >= target - 20) {
+        this.resume = null;
+        return 'done';
+      }
+      if (produced.code === 0) {
+        log.warn(`channel ${channel.number}: ${itemLabel(item)} stopped at ${Math.round(startAt + produced.seconds)}s of ${Math.round(target)}s`);
+      }
+      if ((Date.now() - t1) / 1000 >= EARLY_FAIL_SECONDS && produced.segments > 0) {
+        // Dropped part-way (network, debrid hiccup): pick up from the last second we delivered.
+        this.resume = { itemId: item.id, at: startAt + produced.seconds };
+        return 'retry';
+      }
+      // Died right away: the file doesn't remux cleanly (odd codec/container) or the link is dead.
+      if (!transcode && subs?.delivery !== 'burn') {
+        transcode = true;
+        log.warn(`channel ${channel.number}: ${itemLabel(item)} failed to start, trying again with the video re-encoded`);
+        continue;
+      }
+      transcode = false;
       dropPrepared(item, channel, cand.url);
       prep = await prepare();
       if (prep === undefined) return 'failed';
     }
+    this.resume = null;
+    // No release of this item will play: put another episode in its place, like an unplayable one.
+    if (await skipUnplayable(item, channel)) return 'skipped';
     this.setStatus({ state: 'error', message: 'Every candidate stream failed to play' });
     return 'failed';
   }
 
-  mainArgs(cand, info, channel, offset, limit, subs) {
+  mainArgs(cand, info, channel, offset, limit, subs, { transcode = false } = {}) {
     const opts = channel.options || {};
     const audioIdx = pickAudio(info.audio, opts.audioLanguage);
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
     args.push(...headerArgs(cand.headers));
-    args.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
+    args.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
+      '-reconnect_on_http_error', '5xx', '-reconnect_delay_max', '5');
     if (offset > 1) args.push('-ss', offset.toFixed(2));
     args.push('-readrate', '1');
-    if (this.capsBurst) args.push('-readrate_initial_burst', '10');
+    if (this.capsBurst) args.push('-readrate_initial_burst', String(BURST_SECONDS));
     args.push('-i', cand.url, '-t', limit.toFixed(2));
     if (subs?.delivery === 'burn') {
-      // Image subtitles: overlay them and re-encode, with a keyframe every 2s so segments stay ~4s.
+      // Image subtitles: overlay them and re-encode, with a keyframe every 2s so segments stay on size.
       args.push('-filter_complex', burnFilter(info.video || {}, subs.stream, subs.index), '-map', '[vout]');
+      args.push('-c:v', 'libx264', '-preset', BURN_PRESET, '-crf', '21', '-maxrate', '10M', '-bufsize', '20M',
+        '-force_key_frames', 'expr:gte(t,n_forced*2)', '-sc_threshold', '0');
+    } else if (transcode) {
+      // Fallback for files that won't remux: plain H.264, at most 1080p.
+      args.push('-map', '0:v:0', '-vf', "scale=-2:'min(1080,ih)',format=yuv420p");
       args.push('-c:v', 'libx264', '-preset', BURN_PRESET, '-crf', '21', '-maxrate', '10M', '-bufsize', '20M',
         '-force_key_frames', 'expr:gte(t,n_forced*2)', '-sc_threshold', '0');
     } else {
@@ -250,8 +305,8 @@ class ChannelRunner {
     // The trailing "_" matters: ffmpeg names WebVTT segments "<playlist name><index>.vtt", i.e. p3_0.vtt.
     const playlist = path.join(this.dir, `p${n}_.m3u8`);
     this.programs.set(n, { vtt });
-    const args = [...inputArgs,
-      '-f', 'hls', '-hls_time', '4', '-hls_list_size', '0', '-hls_segment_type', 'mpegts',
+    const args = [...inputArgs, '-output_ts_offset', this.tsOffset.toFixed(3),
+      '-f', 'hls', '-hls_time', String(SEGMENT_SECONDS), '-hls_list_size', '0', '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', path.join(this.dir, `p${n}_%05d.ts`), playlist];
     log.debug('ffmpeg', args.join(' '));
     return new Promise((resolve) => {
@@ -259,6 +314,7 @@ class ChannelRunner {
       this.proc = proc;
       let stderr = '';
       let seen = 0;
+      let seconds = 0;
       let firstOfProgram = true;
       proc.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
       const ingest = () => {
@@ -273,6 +329,8 @@ class ChannelRunner {
         for (const seg of found.slice(seen)) {
           const index = Number(seg.name.match(/_(\d+)\.ts$/)?.[1] ?? 0);
           this.segments.push({ ...seg, program: n, index, seq: this.nextSeq++, disc: firstOfProgram && this.segments.length > 0 });
+          seconds += seg.duration;
+          this.maxTarget = Math.max(this.maxTarget, Math.ceil(seg.duration));
           firstOfProgram = false;
         }
         seen = Math.max(seen, found.length);
@@ -286,7 +344,8 @@ class ChannelRunner {
         ingest();
         if (this.proc === proc) this.proc = null;
         if (code !== 0 && !this.stopped) log.warn(`ffmpeg exited ${code} on channel ${this.channelId}: ${stderr.trim().split('\n').slice(-3).join(' | ')}`);
-        resolve({ code, segments: seen });
+        this.tsOffset += seconds;
+        resolve({ code, segments: seen, seconds });
       });
     });
   }
@@ -329,7 +388,7 @@ class ChannelRunner {
   playlist(kind = 'video') {
     const win = this.segments.slice(-WINDOW);
     const discBefore = (this.droppedDisc || 0) + this.segments.slice(0, this.segments.length - win.length).filter((s) => s.disc).length;
-    const target = Math.max(4, ...win.map((s) => Math.ceil(s.duration)));
+    const target = this.maxTarget; // never shrinks: players expect it to stay put
     const out = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${target}`,
       `#EXT-X-MEDIA-SEQUENCE:${win[0]?.seq ?? 0}`, `#EXT-X-DISCONTINUITY-SEQUENCE:${discBefore}`];
     for (const s of win) {

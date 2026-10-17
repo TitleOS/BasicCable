@@ -30,7 +30,15 @@ Stremio ──/live/3/index.m3u8───────▶ StreamTube
 
 The Stremio stream protocol has no "start at" field, so StreamTube does the playout itself. A single ffmpeg process per channel reads the debrid file in real time from the scheduled offset. It remuxes the video without re-encoding and, by default, converts the audio to stereo AAC. The output is a rolling HLS playlist. When a program ends, the next one is joined to the same playlist with a discontinuity marker, so playback continues like a real channel. Everyone watching a channel shares that one ffmpeg process, so a channel uses one debrid connection no matter how many people watch. ffmpeg stops a minute after the last viewer leaves.
 
-If a stream can't be played, the channel shows a "couldn't play" slate and retries instead of dropping out.
+The live playlist is built to ride out a flaky debrid connection without errors:
+
+- **Cushion.** Segments are 6 seconds long, and players start about 3 segments behind live, which gives roughly 18 seconds of buffer. The playlist lists about 90 seconds, so a player that stalls carries on from where it was instead of being pushed out of the window (an error followed by a jump ahead).
+- **Hand-overs.** If the next program's stream isn't ready when one ends, short "Up next" filler segments keep the playlist moving, so players don't give up and drop back to their menus.
+- **Continuous timestamps.** Each program's timestamps continue from the last one, so players that ignore discontinuity markers (mpv, which Stremio desktop uses) never see time run backwards at an episode change.
+- **Drop-outs.** If a link drops part-way through an episode, playback resumes from the last second delivered. Nothing is skipped; the end of the episode is trimmed instead. ffmpeg sometimes exits "normally" when a link dies, so StreamTube only counts an episode as finished if it reached the end of the file or its slot.
+- **Bad files.** A file that fails as soon as it starts gets one retry with the video re-encoded. If that fails too, the next release is tried, and if every release fails, another episode takes its place. If nothing works at all, a "couldn't play" slate is shown and StreamTube keeps retrying.
+
+Failed segment and playlist requests are logged as warnings, so if a player hits a problem, it shows up in the logs.
 
 ## Quick start
 

@@ -10,6 +10,10 @@ const port = Number(process.env.MOCK_PORT || 7099);
 const delay = Number(process.env.MOCK_DELAY_MS || 0);
 // Video ids (comma separated) that only get unusable results: uncached or torrent-only.
 const unplayable = new Set((process.env.MOCK_UNPLAYABLE || '').split(',').map((s) => s.trim()).filter(Boolean));
+// MOCK_BROKEN=1 adds a top-ranked "Superfan" release that passes the file check but then only returns HTTP 500,
+// like a debrid link that dies as playback starts.
+const broken = process.env.MOCK_BROKEN === '1';
+let brokenHits = 0;
 if (!file || !fs.existsSync(file)) {
   console.error('Set SAMPLE_FILE to a video file');
   process.exit(1);
@@ -35,8 +39,13 @@ http.createServer((req, res) => {
     ];
     return setTimeout(() => {
       res.writeHead(200, { 'content-type': 'application/json' });
+      if (broken) streams.unshift({ name: '[RD+] Mock\n1080p', title: `Show ${id} Superfan 1080p BROKEN`, url: `${base}/video.mkv?q=broken` });
       res.end(JSON.stringify({ streams: unplayable.has(id) ? streams.slice(0, 2) : streams }));
     }, delay);
+  }
+  if (url.pathname === '/video.mkv' && url.searchParams.get('q') === 'broken' && ++brokenHits > 4) {
+    res.writeHead(500).end('broken');
+    return;
   }
   if (url.pathname === '/video.mkv') {
     const size = fs.statSync(file).size;

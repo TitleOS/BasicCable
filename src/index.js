@@ -2,7 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, log } from './config.js';
-import { Router, send, serveStatic, checkAuth, HttpError } from './http.js';
+import { Router, send, serveStatic, checkAuth, clientIp, HttpError } from './http.js';
 import { registerAddon } from './addon.js';
 import { registerApi } from './api.js';
 import { startScheduler } from './scheduler.js';
@@ -19,11 +19,16 @@ router.get('/health', (req, res) => send(res, 200, { ok: true }));
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
   const pathname = url.pathname;
-  // Log what clients ask for (Stremio, IPTV players), but not segment/health/UI noise.
-  if (!/^\/(live\/[^/]+\/(p\d|sub\/|video\.m3u8|subs\.m3u8)|health|api\/|app\.js|style\.css|icon\.svg|logo\/)/.test(pathname) && pathname !== '/') {
-    const t0 = Date.now();
-    res.on('finish', () => log.info(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - t0}ms · ${req.headers['user-agent'] || '-'}`));
-  }
+  // Log what clients ask for (Stremio, IPTV players), but not segment/health/UI noise unless it went wrong,
+  // so a player hitting a missing segment or a refused request shows up.
+  const noisy = /^\/(live\/[^/]+\/(p\d|sub\/|video\.m3u8|subs\.m3u8)|health|api\/|app\.js|style\.css|icon\.svg|logo\/)/.test(pathname) || pathname === '/';
+  const t0 = Date.now();
+  res.on('finish', () => {
+    if (noisy && res.statusCode < 400) return;
+    const line = `${req.method} ${req.url} ${res.statusCode} ${Date.now() - t0}ms · ${clientIp(req)} · ${req.headers['user-agent'] || '-'}`;
+    if (res.statusCode >= 400) log.warn(line);
+    else log.info(line);
+  });
   if (req.method === 'OPTIONS') return send(res, 204, '');
   try {
     const m = router.match(req.method, pathname);
