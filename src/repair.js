@@ -4,7 +4,7 @@
 import { store } from './db.js';
 import { log } from './config.js';
 import { buildChannel, replaceItem, maxItemLength, itemLabel } from './scheduler.js';
-import { interruptRunner } from './playout.js';
+import { interruptRunner, publishedEdge } from './playout.js';
 
 /**
  * Upcoming over-long items: the channel's guide is re-planned from now. An over-long item that is on air is
@@ -21,7 +21,7 @@ export async function repairGuide({ now = Date.now() } = {}) {
       if (r.end - r.start <= max + 60000) continue;
       const minutes = Math.round((r.end - r.start) / 60000);
       if (r.start <= now) {
-        await replaceItem(channel.id, r.id, { now });
+        await replaceItem(channel.id, r.id, { now: Math.min(Math.max(now, publishedEdge(channel.id) ?? 0), r.end - 1000) });
         interruptRunner(channel.id);
         fixed.push(`channel ${channel.number}: skipped ${itemLabel(r)} (on air, ${minutes} min in the guide)`);
       } else {

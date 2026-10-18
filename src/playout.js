@@ -8,14 +8,16 @@ import { prepareStream, dropPrepared, skipUnplayable, preparedFor } from './pref
 import { buildChannel, itemLabel } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
 
-// 6s segments: players start ~3 segments behind the live edge, so that's ~18s of cushion against slow debrid
-// reads. The playlist lists ~90s so a player that stalls can carry on where it was instead of being pushed
-// out of the window (which shows an error and jumps ahead).
+// Read-ahead: ffmpeg reads up to READ_AHEAD_SECONDS ahead of real time, but each segment only appears in the
+// live playlist when its moment in the schedule arrives. Viewers stay on real time and in step with the guide,
+// while a slow or stalled debrid read drains the server's buffer instead of their screen.
+//
+// 6s segments: players start ~3 segments behind the live edge (~18s of their own cushion). The playlist lists
+// ~60s, so a player that stalls carries on where it was instead of being pushed out of the window.
 const SEGMENT_SECONDS = 6;
-const WINDOW = 15; // segments listed in the live playlist
-const KEEP_FILES = 25; // segment files kept on disk per channel
-const BURST_SECONDS = 20; // read this much ahead at the start so the first segments are ready at once
-const EARLY_FAIL_SECONDS = 15; // ffmpeg dying sooner than this means the file itself is the problem
+const WINDOW = 10; // segments listed in the live playlist
+const PREROLL_SECONDS = 18; // published straight away on tune-in, so players can start
+const EARLY_FAIL_SECONDS = 15; // ffmpeg dying before producing this much video means the file is the problem
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const BURN_PRESET = process.env.SUBTITLE_BURN_PRESET || 'veryfast';
 const EMPTY_VTT = 'WEBVTT\n\n';
@@ -83,9 +85,13 @@ class ChannelRunner {
     this.programs = new Map(); // program number -> { vtt: bool }
     this.nextSeq = 0;
     this.program = 0;
-    // Each program's timestamps continue from where the previous one ended, so players that ignore
-    // discontinuity tags (mpv/ffmpeg) never see time run backwards and mistake it for the end of the stream.
-    this.tsOffset = 0;
+    // The channel's own timeline: contentTotal seconds of video produced so far, the first of which was due on
+    // screen at timeBase (wall clock). Each program's timestamps continue from contentTotal, so players that
+    // ignore discontinuity tags (mpv/ffmpeg) never see time run backwards and mistake it for the end of the stream.
+    this.timeBase = null;
+    this.contentTotal = 0;
+    this.visible = 0; // segments published so far (never decreases)
+    this.cancelled = new Set(); // programs whose output is thrown away (skipped)
     this.maxTarget = SEGMENT_SECONDS;
     this.resume = null; // { itemId, at } after a mid-program drop: carry on from there
     this.lastAccess = Date.now();
@@ -116,12 +122,66 @@ class ChannelRunner {
 
   setStatus(s) { this.status = { ...this.status, ...s, since: Date.now() }; }
 
+  /** Wall time at which the next second of video we produce will be shown: the channel's production clock. */
+  clock() {
+    const now = Date.now();
+    if (this.timeBase == null) this.timeBase = now;
+    const t = this.timeBase + this.contentTotal * 1000;
+    if (t < now - SEGMENT_SECONDS * 1000) {
+      // The buffer ran dry and production fell behind: carry on from now rather than replaying the past.
+      this.timeBase += now - t;
+      return now;
+    }
+    return t;
+  }
+
+  /** Seconds of video buffered beyond what is due on screen now. */
+  leadSeconds() {
+    return this.timeBase == null ? 0 : (this.timeBase + this.contentTotal * 1000 - Date.now()) / 1000;
+  }
+
+  /** Segments whose time has come (plus the tune-in preroll) are published; the rest wait in the buffer. */
+  visibleCount() {
+    if (this.timeBase == null) return 0;
+    const due = (Date.now() - this.timeBase) / 1000 + PREROLL_SECONDS;
+    while (this.visible < this.segments.length && this.segments[this.visible].contentStart <= due) this.visible++;
+    return this.visible;
+  }
+
+  /** How far ahead to read for a file: READ_AHEAD_SECONDS, less for high bitrates or a small HLS_DIR. */
+  leadTarget(info) {
+    if (config.readAheadSeconds <= 0) return 0; // read-ahead turned off
+    const bitrate = info?.bitrate || 10e6;
+    let bytes = config.readAheadMB * 1048576;
+    try {
+      const st = fs.statfsSync(this.dir);
+      bytes = Math.min(bytes, (st.bavail * st.bsize) / 4);
+    } catch { /* statfs unsupported: use the configured cap */ }
+    return Math.max(10, Math.min(config.readAheadSeconds, (bytes * 8) / bitrate));
+  }
+
+  deleteSegmentFiles(seg) {
+    if (seg.deleted) return;
+    seg.deleted = true;
+    fs.rm(path.join(this.dir, seg.name), { force: true }, () => {});
+    if (this.programs.get(seg.program)?.vtt) fs.rm(path.join(this.dir, `p${seg.program}_${seg.index}.vtt`), { force: true }, () => {});
+  }
+
+  /** Throw away buffered video nobody has been shown yet (the program it belongs to was skipped). */
+  dropUnpublished() {
+    const keep = this.visibleCount();
+    for (const seg of this.segments.slice(keep)) this.deleteSegmentFiles(seg);
+    this.segments.length = keep;
+    const last = this.segments[keep - 1];
+    this.contentTotal = last ? last.contentStart + last.duration : 0;
+  }
+
   async run() {
     let lastItem = null;
     let fails = 0;
     let failItem = null;
     while (!this.stopped) {
-      const now = Date.now();
+      const now = this.clock();
       let item = store.epgAt(this.channelId, now);
       if (item && lastItem && item.id === lastItem.id) item = store.epgAfter(this.channelId, lastItem.start);
       if (!item) {
@@ -138,7 +198,7 @@ class ChannelRunner {
       fails++;
       if (result === 'retry' && fails <= 3) continue; // link dropped mid-item: resume where it stopped
       // Keep the channel alive with a slate, retrying every minute, giving up on the item after a few tries.
-      const remaining = item.end - Date.now();
+      const remaining = item.end - this.clock();
       const slateMs = fails > 3 ? remaining : Math.min(remaining, 60000);
       if (slateMs > 3000) await this.playSlate(`Couldn't play ${itemLabel(item)}`, this.status.message || 'No working stream found', slateMs / 1000);
       if (fails > 3) lastItem = item;
@@ -163,12 +223,15 @@ class ChannelRunner {
     };
     let prep;
     if (this.segments.length && !preparedFor(item, channel)) {
-      // Mid-session and the next program isn't ready: keep players fed with short "Up next" segments while we
-      // look, instead of letting the playlist freeze (players give up and drop back to their menus).
+      // Mid-session and the next program isn't ready. The buffer usually covers the wait; if it runs low, keep
+      // players fed with short "Up next" segments instead of letting the playlist freeze (players give up and
+      // drop back to their menus).
       let settled = false;
       const pending = prepare().then((r) => { settled = true; return r; });
-      await Promise.race([pending, sleep(1000)]);
-      while (!settled && !this.stopped) await this.playSlate(`Up next: ${itemLabel(item)}`, 'Getting the stream ready…', 4);
+      while (!settled && !this.stopped) {
+        if (this.leadSeconds() > 12) await Promise.race([pending, sleep(1000)]);
+        else await this.playSlate(`Up next: ${itemLabel(item)}`, 'Getting the stream ready…', 4);
+      }
       prep = await pending;
     } else {
       prep = await prepare();
@@ -176,7 +239,7 @@ class ChannelRunner {
     if (prep === undefined) return 'failed';
     if (!prep) {
       // Nothing playable: put another episode in its place (by the channel's rules) and play that instead.
-      if (await skipUnplayable(item, channel)) return 'skipped';
+      if (await skipUnplayable(item, channel, { at: this.clock() })) return 'skipped';
       this.setStatus({ state: 'error', message: 'No cached debrid stream found' });
       return 'failed';
     }
@@ -194,8 +257,12 @@ class ChannelRunner {
       // trimmed instead). An item that starts early (the previous file ran short) plays from 0 and may run past
       // its slot until its scheduled end.
       const resumeAt = this.resume?.itemId === item.id ? this.resume.at : null;
-      const startAt = resumeAt ?? Math.max(0, (Date.now() - item.start) / 1000);
-      const limit = Math.max(5, (item.end - Date.now()) / 1000);
+      const pos = this.clock(); // where the channel's timeline is: up to READ_AHEAD_SECONDS past now
+      const startAt = resumeAt ?? Math.max(0, (pos - item.start) / 1000);
+      const limit = Math.max(5, (item.end - pos) / 1000);
+      // Read ahead just enough to bring the buffer up to its target (a few seconds minimum to start quickly).
+      const target = this.leadTarget(info);
+      const burst = Math.max(4, Math.min(target, target - this.leadSeconds()));
       if (info.duration && startAt >= info.duration - 3) return 'done'; // we're in the padding after it ended
       this.setStatus({
         state: 'playing',
@@ -217,8 +284,7 @@ class ChannelRunner {
         this.skipRequested = false;
         return 'skipped';
       }
-      const t1 = Date.now();
-      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs, { transcode }), { vtt: subs?.delivery === 'vtt' });
+      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs, { transcode, burst }), { vtt: subs?.delivery === 'vtt' });
       if (this.stopped) return 'done';
       if (this.skipRequested) {
         // Someone skipped this program; the guide already has its replacement.
@@ -228,15 +294,15 @@ class ChannelRunner {
       }
       // ffmpeg also exits cleanly when a debrid link dies (it sees an early end of file), so only call it
       // finished if it got to the end of the file or of the slot.
-      const target = Math.min(info.duration || Infinity, startAt + limit);
-      if (produced.code === 0 && startAt + produced.seconds >= target - 20) {
+      const end = Math.min(info.duration || Infinity, startAt + limit);
+      if (produced.code === 0 && startAt + produced.seconds >= end - 20) {
         this.resume = null;
         return 'done';
       }
       if (produced.code === 0) {
-        log.warn(`channel ${channel.number}: ${itemLabel(item)} stopped at ${Math.round(startAt + produced.seconds)}s of ${Math.round(target)}s`);
+        log.warn(`channel ${channel.number}: ${itemLabel(item)} stopped at ${Math.round(startAt + produced.seconds)}s of ${Math.round(end)}s`);
       }
-      if ((Date.now() - t1) / 1000 >= EARLY_FAIL_SECONDS && produced.segments > 0) {
+      if (produced.seconds >= EARLY_FAIL_SECONDS) {
         // Dropped part-way (network, debrid hiccup): pick up from the last second we delivered.
         this.resume = { itemId: item.id, at: startAt + produced.seconds };
         return 'retry';
@@ -254,21 +320,22 @@ class ChannelRunner {
     }
     this.resume = null;
     // No release of this item will play: put another episode in its place, like an unplayable one.
-    if (await skipUnplayable(item, channel)) return 'skipped';
+    if (await skipUnplayable(item, channel, { at: this.clock() })) return 'skipped';
     this.setStatus({ state: 'error', message: 'Every candidate stream failed to play' });
     return 'failed';
   }
 
-  mainArgs(cand, info, channel, offset, limit, subs, { transcode = false } = {}) {
+  mainArgs(cand, info, channel, offset, limit, subs, { transcode = false, burst = 20 } = {}) {
     const opts = channel.options || {};
     const audioIdx = pickAudio(info.audio, opts.audioLanguage);
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
     args.push(...headerArgs(cand.headers));
-    args.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
+    // A read that hangs for 20s counts as a network error, so ffmpeg reconnects instead of waiting forever.
+    args.push('-rw_timeout', '20000000', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
       '-reconnect_on_http_error', '5xx', '-reconnect_delay_max', '5');
     if (offset > 1) args.push('-ss', offset.toFixed(2));
     args.push('-readrate', '1');
-    if (this.capsBurst) args.push('-readrate_initial_burst', String(BURST_SECONDS));
+    if (this.capsBurst) args.push('-readrate_initial_burst', String(Math.round(burst)));
     args.push('-i', cand.url, '-t', limit.toFixed(2));
     if (subs?.delivery === 'burn') {
       // Image subtitles: overlay them and re-encode, with a keyframe every 2s so segments stay on size.
@@ -321,7 +388,7 @@ class ChannelRunner {
     // The trailing "_" matters: ffmpeg names WebVTT segments "<playlist name><index>.vtt", i.e. p3_0.vtt.
     const playlist = path.join(this.dir, `p${n}_.m3u8`);
     this.programs.set(n, { vtt });
-    const args = [...inputArgs, '-output_ts_offset', this.tsOffset.toFixed(3),
+    const args = [...inputArgs, '-output_ts_offset', this.contentTotal.toFixed(3),
       '-f', 'hls', '-hls_time', String(SEGMENT_SECONDS), '-hls_list_size', '0', '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', path.join(this.dir, `p${n}_%05d.ts`), playlist];
     log.debug('ffmpeg', args.join(' '));
@@ -334,6 +401,7 @@ class ChannelRunner {
       let firstOfProgram = true;
       proc.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
       const ingest = () => {
+        if (this.cancelled.has(n)) return;
         let text;
         try { text = fs.readFileSync(playlist, 'utf8'); } catch { return; }
         const lines = text.split(/\r?\n/);
@@ -344,7 +412,8 @@ class ChannelRunner {
         }
         for (const seg of found.slice(seen)) {
           const index = Number(seg.name.match(/_(\d+)\.ts$/)?.[1] ?? 0);
-          this.segments.push({ ...seg, program: n, index, seq: this.nextSeq++, disc: firstOfProgram && this.segments.length > 0 });
+          this.segments.push({ ...seg, program: n, index, seq: this.nextSeq++, disc: firstOfProgram && this.segments.length > 0, contentStart: this.contentTotal });
+          this.contentTotal += seg.duration;
           seconds += seg.duration;
           this.maxTarget = Math.max(this.maxTarget, Math.ceil(seg.duration));
           firstOfProgram = false;
@@ -353,31 +422,38 @@ class ChannelRunner {
         if (seen) this.resolveWaiters();
         this.pruneFiles();
       };
-      const poll = setInterval(ingest, 1000);
+      // Watchdog: segments arrive at least every few seconds while ffmpeg works. If none has for 45s the source
+      // has hung; kill ffmpeg so playback picks up again from the last delivered second.
+      let lastNew = Date.now();
+      let seenAtCheck = 0;
+      const poll = setInterval(() => {
+        ingest();
+        if (seen !== seenAtCheck) { seenAtCheck = seen; lastNew = Date.now(); }
+        else if (Date.now() - lastNew > 45000 && !proc.killed) {
+          log.warn(`channel ${this.channelId}: no new video for 45s, restarting the stream`);
+          proc.kill('SIGKILL');
+        }
+      }, 1000);
       proc.on('error', (e) => { stderr += e.message; });
       proc.on('close', (code) => {
         clearInterval(poll);
         ingest();
         if (this.proc === proc) this.proc = null;
         if (code !== 0 && !this.stopped) log.warn(`ffmpeg exited ${code} on channel ${this.channelId}: ${stderr.trim().split('\n').slice(-3).join(' | ')}`);
-        this.tsOffset += seconds;
         resolve({ code, segments: seen, seconds });
       });
     });
   }
 
+  /** Delete segments that have scrolled out of the published window (the unpublished buffer is kept). */
   pruneFiles() {
-    const keep = this.segments.length - KEEP_FILES;
-    if (keep <= 0) return;
-    for (const seg of this.segments.slice(0, keep)) {
-      if (seg.deleted) continue;
-      seg.deleted = true;
-      fs.rm(path.join(this.dir, seg.name), { force: true }, () => {});
-      if (this.programs.get(seg.program)?.vtt) fs.rm(path.join(this.dir, `p${seg.program}_${seg.index}.vtt`), { force: true }, () => {});
-    }
+    const cut = this.visibleCount() - WINDOW - 3;
+    if (cut <= 0) return;
+    for (const seg of this.segments.slice(0, cut)) this.deleteSegmentFiles(seg);
     // Drop bookkeeping for long-gone segments, but remember discontinuities for the sequence counter.
-    if (this.segments.length > 500) {
-      const drop = this.segments.splice(0, this.segments.length - 200);
+    if (cut > 400) {
+      const drop = this.segments.splice(0, cut - 100);
+      this.visible -= drop.length;
       this.droppedDisc = (this.droppedDisc || 0) + drop.filter((s) => s.disc).length;
     }
   }
@@ -391,10 +467,10 @@ class ChannelRunner {
   /** Wait until enough segments exist for a player to start. */
   async waitReady(minSegments = 2, timeoutMs = 45000) {
     const until = Date.now() + timeoutMs;
-    while (this.segments.length < minSegments && !this.stopped && Date.now() < until) {
+    while (this.visibleCount() < minSegments && !this.stopped && Date.now() < until) {
       await Promise.race([new Promise((r) => this.waiters.push(r)), sleep(1000)]);
     }
-    return this.segments.length > 0;
+    return this.visibleCount() > 0;
   }
 
   /**
@@ -402,8 +478,9 @@ class ChannelRunner {
    * numbers, durations and discontinuities); programs without a text track just get empty cues.
    */
   playlist(kind = 'video') {
-    const win = this.segments.slice(-WINDOW);
-    const discBefore = (this.droppedDisc || 0) + this.segments.slice(0, this.segments.length - win.length).filter((s) => s.disc).length;
+    const published = this.segments.slice(0, this.visibleCount());
+    const win = published.slice(-WINDOW);
+    const discBefore = (this.droppedDisc || 0) + published.slice(0, published.length - win.length).filter((s) => s.disc).length;
     const target = this.maxTarget; // never shrinks: players expect it to stay put
     const out = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${target}`,
       `#EXT-X-MEDIA-SEQUENCE:${win[0]?.seq ?? 0}`, `#EXT-X-DISCONTINUITY-SEQUENCE:${discBefore}`];
@@ -464,12 +541,28 @@ export function peekRunner(channelId) {
   return runners.get(Number(channelId));
 }
 
+/**
+ * Wall time up to which a running channel has published video: what viewers will see before anything changed
+ * now can reach them. Null when the channel isn't running.
+ */
+export function publishedEdge(channelId) {
+  const r = runners.get(Number(channelId));
+  if (!r || r.stopped || r.timeBase == null) return null;
+  const n = r.visibleCount();
+  const last = r.segments[n - 1];
+  return last ? r.timeBase + (last.contentStart + last.duration) * 1000 : Date.now();
+}
+
 /** Cut a playing channel over to what the guide now says is on (after the current item was replaced). */
 export function interruptRunner(channelId) {
   const r = runners.get(Number(channelId));
   if (!r || r.stopped) return false;
   r.skipRequested = true;
-  if (r.proc) r.proc.kill('SIGKILL');
+  if (r.proc) {
+    r.cancelled.add(r.program);
+    r.proc.kill('SIGKILL');
+  }
+  r.dropUnpublished(); // the buffered rest of the skipped program never airs
   return true;
 }
 
@@ -479,7 +572,7 @@ export function stopRunner(channelId) {
 }
 
 export function runnerStatus() {
-  return [...runners.values()].map((r) => ({ channelId: r.channelId, ...r.status, viewers: r.activeViewers(), idleFor: Date.now() - r.lastAccess }));
+  return [...runners.values()].map((r) => ({ channelId: r.channelId, ...r.status, viewers: r.activeViewers(), buffered: Math.max(0, Math.round(r.leadSeconds())), idleFor: Date.now() - r.lastAccess }));
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ import { config, log } from './config.js';
 import { ops } from './api.js';
 import { search, getMeta, expandWildcard } from './metadata.js';
 import { itemLabel, replaceItem } from './scheduler.js';
-import { runnerStatus, ffmpegCaps, interruptRunner } from './playout.js';
+import { runnerStatus, ffmpegCaps, interruptRunner, publishedEdge } from './playout.js';
 import { addonBase } from './picker.js';
 import { repairGuide } from './repair.js';
 import { parseDays, parseClock, parseDuration, minutesBetween, parseTitleSpec, normTitle, parseResolution } from './nl.js';
@@ -651,10 +651,12 @@ function registerTools(server) {
     annotations: WRITE,
   }, async ({ channel }) => {
     const c = resolveChannel(channel);
-    const cur = store.epgAt(c.id, Date.now());
+    // If the channel is streaming, cut where its published video ends, so the replacement starts from the top.
+    const at = Math.max(Date.now(), publishedEdge(c.id) ?? 0);
+    const cur = store.epgAt(c.id, at) || store.epgAt(c.id, Date.now());
     if (!cur) throw new Error(`Nothing is on ${c.name} right now.`);
-    await replaceItem(c.id, cur.id);
-    const now = store.epgAt(c.id, Date.now());
+    await replaceItem(c.id, cur.id, { now: Math.min(at, cur.end - 1000) });
+    const now = store.epgAt(c.id, at);
     const live = interruptRunner(c.id);
     return text(`Skipped ${itemLabel(cur)} on ${c.number} ${c.name}. Now: ${now ? itemLabel(now) : 'nothing scheduled'}${live ? ' (switching the live stream now)' : ''}.`);
   });

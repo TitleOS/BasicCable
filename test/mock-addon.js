@@ -3,6 +3,7 @@
 //   SAMPLE_FILE=/path/to/video.mkv node test/mock-addon.js   -> http://localhost:7099/manifest.json
 import http from 'node:http';
 import fs from 'node:fs';
+import { Transform } from 'node:stream';
 
 const file = process.env.SAMPLE_FILE;
 const port = Number(process.env.MOCK_PORT || 7099);
@@ -14,6 +15,22 @@ const unplayable = new Set((process.env.MOCK_UNPLAYABLE || '').split(',').map((s
 // like a debrid link that dies as playback starts.
 const broken = process.env.MOCK_BROKEN === '1';
 let brokenHits = 0;
+// GET /stall?seconds=60 freezes every video download for that long, like a debrid host that stops responding.
+let stallUntil = 0;
+
+/** Stream a file range; while a stall is in effect, chunks are held back until it ends. */
+function sendFile(res, opts) {
+  const gate = new Transform({
+    transform(chunk, _enc, cb) {
+      const wait = stallUntil - Date.now();
+      if (wait > 0) setTimeout(() => cb(null, chunk), wait);
+      else cb(null, chunk);
+    },
+  });
+  const rs = fs.createReadStream(file, opts);
+  rs.pipe(gate).pipe(res);
+  res.on('close', () => rs.destroy());
+}
 if (!file || !fs.existsSync(file)) {
   console.error('Set SAMPLE_FILE to a video file');
   process.exit(1);
@@ -43,6 +60,12 @@ http.createServer((req, res) => {
       res.end(JSON.stringify({ streams: unplayable.has(id) ? streams.slice(0, 2) : streams }));
     }, delay);
   }
+  if (url.pathname === '/stall') {
+    stallUntil = Date.now() + Number(url.searchParams.get('seconds') || 60) * 1000;
+    res.writeHead(200).end(`stalling until ${new Date(stallUntil).toISOString()}
+`);
+    return;
+  }
   if (url.pathname === '/video.mkv' && url.searchParams.get('q') === 'broken' && ++brokenHits > 4) {
     res.writeHead(500).end('broken');
     return;
@@ -55,11 +78,11 @@ http.createServer((req, res) => {
       const end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
       res.writeHead(206, { 'content-type': 'video/x-matroska', 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': end - start + 1 });
       if (req.method === 'HEAD') return res.end();
-      return fs.createReadStream(file, { start, end }).pipe(res);
+      return sendFile(res, { start, end });
     }
     res.writeHead(200, { 'content-type': 'video/x-matroska', 'accept-ranges': 'bytes', 'content-length': size });
     if (req.method === 'HEAD') return res.end();
-    return fs.createReadStream(file).pipe(res);
+    return sendFile(res, {});
   }
   res.writeHead(404).end();
 }).listen(port, () => console.log(`mock debrid addon on http://localhost:${port}/manifest.json`));

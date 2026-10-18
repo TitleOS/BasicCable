@@ -16,6 +16,7 @@ services:
       ADMIN_PASSWORD: ""
     volumes:
       - ./data:/data
-    # Live segments are short-lived; keep them in RAM.
+    # Live segments and the read-ahead buffer live here; keep them in RAM. Budget ~250 MB per watched 1080p
+    # channel (up to ~1 GB for a 4K remux). The read-ahead shrinks itself if this fills up.
     tmpfs:
-      - /tmp/streamtube-hls:size=512m
+      - /tmp/streamtube-hls:size=2g

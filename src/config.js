@@ -21,6 +21,10 @@ export const config = {
   horizonHours: Number(env.GUIDE_HOURS || 48),
   // Stop a channel's ffmpeg after nobody has requested its playlist for this long.
   idleSeconds: Number(env.IDLE_SECONDS || 60),
+  // How far ahead of real time each watched channel reads from debrid, as a buffer against slow reads. Capped
+  // per channel at READ_AHEAD_MB of segments and at a quarter of the free space in HLS_DIR.
+  readAheadSeconds: Number(env.READ_AHEAD_SECONDS ?? 120),
+  readAheadMB: Number(env.READ_AHEAD_MB || 300),
   logLevel: env.LOG_LEVEL || 'info',
 };
 

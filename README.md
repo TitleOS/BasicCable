@@ -33,7 +33,8 @@ The Stremio stream protocol has no "start at" field, so StreamTube does the play
 
 The live playlist is built to ride out a flaky debrid connection without errors:
 
-- **Cushion.** Segments are 6 seconds long, and players start about 3 segments behind live, which gives roughly 18 seconds of buffer. The playlist lists about 90 seconds, so a player that stalls carries on from where it was instead of being pushed out of the window (an error followed by a jump ahead).
+- **Read-ahead.** Each watched channel reads up to 2 minutes ahead of real time from debrid. A segment appears in the live playlist only when its moment in the schedule arrives, so viewers stay on real time and in step with the guide, while a slow or stalled debrid read drains the server's buffer instead of their screen. In testing, a 60-second stall didn't interrupt publishing at all; the buffer dipped from 119 to 94 seconds and refilled within 15 seconds afterwards. If a debrid host hangs outright, ffmpeg reconnects after 20 seconds, and a watchdog restarts the stream (from the last delivered second) if no video arrives for 45 seconds.
+- **Player cushion.** Segments are 6 seconds long, and players start about 3 segments behind live, roughly 18 seconds of their own buffer. The playlist lists about 60 seconds, so a player that stalls carries on from where it was instead of being pushed out of the window (an error followed by a jump ahead).
 - **Hand-overs.** If the next program's stream isn't ready when one ends, short "Up next" filler segments keep the playlist moving, so players don't give up and drop back to their menus.
 - **Continuous timestamps.** Each program's timestamps continue from the last one, so players that ignore discontinuity markers (mpv, which Stremio desktop uses) never see time run backwards at an episode change.
 - **Drop-outs.** If a link drops part-way through an episode, playback resumes from the last second delivered. Nothing is skipped; the end of the episode is trimmed instead. ffmpeg sometimes exits "normally" when a link dies, so StreamTube only counts an episode as finished if it reached the end of the file or its slot.
@@ -68,7 +69,9 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 | `BASE_URL` | *(from request)* | Public address used in stream and playlist URLs. |
 | `ADMIN_PASSWORD` | *(none)* | Protects the web UI and API with HTTP basic auth (any user name). The addon, live and playlist endpoints stay open because Stremio and IPTV apps can't log in. |
 | `DATA_DIR` | `/data` | SQLite database. |
-| `HLS_DIR` | `/tmp/streamtube-hls` | Live segments, about 30 per active channel. tmpfs works well here. |
+| `HLS_DIR` | `/tmp/streamtube-hls` | Live segments plus the read-ahead buffer. Put it on a tmpfs (RAM); see [Keeping segments in RAM](#keeping-segments-in-ram). |
+| `READ_AHEAD_SECONDS` | `120` | How far ahead of real time each watched channel reads. `0` turns read-ahead off. |
+| `READ_AHEAD_MB` | `300` | Per-channel cap on the read-ahead buffer. It also never takes more than a quarter of the free space in `HLS_DIR`, so a 4K remux reads less far ahead. |
 | `GUIDE_HOURS` | `48` | How far ahead the guide is planned. |
 | `IDLE_SECONDS` | `60` | How long a channel keeps running after its last viewer leaves. |
 | `TRUST_PROXY` | *(off)* | Set to `1` when StreamTube sits behind your own reverse proxy, so viewer IPs are read from `X-Forwarded-For`. Without it, every viewer looks like the proxy. |
@@ -122,6 +125,17 @@ To restore, choose the file on another install (or the same one) and click **Imp
 Guides are rebuilt in the background after an import. A bad file is rejected before anything changes, with a message naming the channel at fault.
 
 The same thing is available from the API: `GET /api/backup` (add `?settings=1` to include settings) and `POST /api/restore` with `{"backup": <file contents>, "replace": false, "includeSettings": false}`.
+
+## Keeping segments in RAM
+
+Each watched channel keeps its read-ahead buffer and the last minute of published video in `HLS_DIR`. At 1080p that's around 250 MB per channel; a 4K remux can take about 1 GB. The data is rewritten constantly, so RAM is the right place for it.
+
+- **docker compose:** the included `docker-compose.yml` mounts a 2 GB tmpfs at `/tmp/streamtube-hls`, the default `HLS_DIR`. Don't set `HLS_DIR` yourself.
+- **docker run:** add `--tmpfs /tmp/streamtube-hls:size=2g`.
+- **Portainer, single container:** Portainer's container form has no tmpfs option, but every container has a RAM-backed `/dev/shm`. Under **Advanced container settings → Runtime & Resources**, set **Shared memory size** to 2048 MB. Then set the environment variable `HLS_DIR=/dev/shm/streamtube-hls`.
+- **Portainer, as a stack:** paste the compose file under **Stacks → Add stack** and you get the tmpfs mount as-is.
+
+Size it for the channels you'll watch at once. Too small isn't fatal: the read-ahead shrinks when space runs low.
 
 ## Fast tune-in
 

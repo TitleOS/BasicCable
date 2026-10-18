@@ -106,9 +106,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * No addon has a playable stream for this item: put something else in its place, picked by the channel's
  * usual rules (next episode in order, a random one, another title...). Returns the replacement or null.
  */
-export async function skipUnplayable(item, channel) {
+export async function skipUnplayable(item, channel, { at = Date.now() } = {}) {
   markUnplayable(item.video_id);
-  const now = Date.now();
+  const now = at; // the channel's own position (its stream can run ahead of the wall clock)
   if (!(await replaceItem(channel.id, item.id, { now }))) return null;
   const replacement = item.start > now
     ? store.get('SELECT * FROM epg WHERE channel_id = ? AND start = ?', channel.id, item.start)

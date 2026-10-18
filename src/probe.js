@@ -18,6 +18,7 @@ export function probe(url, headers) {
         if (!streams.some((s) => s.codec_type === 'video')) return resolve(null);
         resolve({
           duration: Number(j.format?.duration) || null,
+          bitrate: Number(j.format?.bit_rate) || (Number(j.format?.size) && Number(j.format?.duration) ? Number(j.format.size) * 8 / Number(j.format.duration) : null),
           video: streams.find((s) => s.codec_type === 'video'),
           audio: streams.filter((s) => s.codec_type === 'audio'),
           subtitles: streams.filter((s) => s.codec_type === 'subtitle'),
