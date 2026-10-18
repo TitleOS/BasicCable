@@ -12,6 +12,7 @@ import { search, getMeta, expandWildcard } from './metadata.js';
 import { itemLabel, replaceItem } from './scheduler.js';
 import { runnerStatus, ffmpegCaps, interruptRunner } from './playout.js';
 import { addonBase } from './picker.js';
+import { repairGuide } from './repair.js';
 import { parseDays, parseClock, parseDuration, minutesBetween, parseTitleSpec, normTitle, parseResolution } from './nl.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -667,6 +668,16 @@ function registerTools(server) {
     const list = channel != null ? [resolveChannel(channel)] : store.listChannels();
     for (const c of list) await ops.rebuild(c.id);
     return text(`Rebuilt the guide for ${list.map((c) => `${c.number} ${c.name}`).join(', ')}.`);
+  });
+
+  server.registerTool('streamtube_repair_guide', {
+    title: 'Repair guide',
+    description: 'Find guide items stretched far past their usual runtime (e.g. a 50-minute episode holding a 9-hour slot) and fix them: upcoming ones are re-planned, an on-air one is skipped. Also runs automatically at startup.',
+    inputSchema: z.object({}),
+    annotations: { ...WRITE, idempotentHint: true },
+  }, async () => {
+    const fixed = await repairGuide();
+    return text(fixed.length ? `Fixed ${fixed.length} item(s):\n${fixed.map((f) => `- ${f}`).join('\n')}` : 'The guide looks fine: nothing is stretched past its usual runtime.');
   });
 
   // ---- stream addons & settings

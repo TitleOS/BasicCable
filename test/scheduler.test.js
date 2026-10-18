@@ -160,3 +160,50 @@ test('an unplayable episode that is already on air is cut off now and replaced i
   assert.ok(!later.some((r) => r.video_id === onAir.video_id));
   assert.ok(isUnplayable(onAir.video_id));
 });
+
+test('maxItemLength allows extended cuts but not absurd lengths', async () => {
+  const { maxItemLength } = await import('../src/scheduler.js');
+  const ch = { round_minutes: 5 };
+  // Sitcom, 21 min: runtime + 20 wins -> 41 -> rounded to 45.
+  assert.equal(await maxItemLength({ type: 'series', meta_id: 'tt001' }, ch), 45 * 60e3);
+  // Drama, 44 min: runtime * 1.6 wins -> 70.4 -> rounded to 75.
+  assert.equal(await maxItemLength({ type: 'series', meta_id: 'tt002' }, ch), 75 * 60e3);
+});
+
+test('repairGuide skips an over-stretched on-air item and replans stretched upcoming ones', async () => {
+  const { repairGuide } = await import('../src/repair.js');
+  const ch = store.createChannel({ name: 'Repair', round_minutes: 5 });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt002', name: 'Drama' });
+  await buildChannel(ch.id);
+  const now = Date.now();
+  const onAir = store.epgAt(ch.id, now);
+  const upcoming = store.epgAfter(ch.id, onAir.start);
+  // Simulate the old bug: the on-air item holds 9 hours, the next one 4.
+  store.run('UPDATE epg SET end = ? WHERE id = ?', onAir.start + 9 * 3600e3, onAir.id);
+  store.run('UPDATE epg SET start = ?, end = ? WHERE id = ?', onAir.start + 9 * 3600e3, onAir.start + 13 * 3600e3, upcoming.id);
+  store.run('DELETE FROM epg WHERE channel_id = ? AND start > ? AND id != ?', ch.id, onAir.start, upcoming.id);
+  const fixed = await repairGuide({ now });
+  assert.ok(fixed.some((f) => /skipped/.test(f)), fixed.join('\n'));
+  assert.equal(store.get('SELECT end FROM epg WHERE id = ?', onAir.id).end, now, 'on-air item is cut off now');
+  const rows = store.epgRange(ch.id, now, Infinity).filter((r) => r.start >= now);
+  assert.ok(rows.length > 5);
+  for (const r of rows) assert.ok(r.end - r.start <= 75 * 60e3, `${r.video_id} is ${(r.end - r.start) / 60e3} min`);
+  assertContiguous(rows);
+  assert.deepEqual(await repairGuide(), [], 'second pass finds nothing');
+});
+
+test('a series runtime that is really the whole-series total is split per episode', async () => {
+  const { episodeRuntime } = await import('../src/metadata.js');
+  // Cinemeta lists Planet Earth as "538 min" for its 11 episodes.
+  seedSeries('tt003', 'Nature Doc', 538, 1, 11);
+  const meta = store.cacheGet('meta:series:tt003', 3600e3);
+  // 538 min over the 12 regular-season videos seedSeries makes (11 plus one dated in the future) ≈ 45 per episode.
+  assert.equal(episodeRuntime(meta), 45);
+  assert.equal(episodeRuntime({ type: 'series', runtime: 44, videos: [] }), 44);
+  assert.equal(episodeRuntime({ type: 'movie', runtime: 170 }), 170);
+  const ch = store.createChannel({ name: 'Nature', round_minutes: 5 });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt003', name: 'Nature Doc' });
+  await buildChannel(ch.id);
+  const rows = store.epgRange(ch.id, Date.now(), Infinity);
+  assert.ok(rows.every((r) => r.end - r.start <= 60 * 60e3), `slots: ${[...new Set(rows.map((r) => (r.end - r.start) / 60e3))]}`);
+});

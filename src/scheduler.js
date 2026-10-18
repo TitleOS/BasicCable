@@ -1,7 +1,7 @@
 import { DateTime } from 'luxon';
 import { store } from './db.js';
 import { config, log } from './config.js';
-import { getMeta, playableEpisodes, expandWildcard } from './metadata.js';
+import { getMeta, playableEpisodes, expandWildcard, episodeRuntime } from './metadata.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -41,7 +41,7 @@ async function loadLibrary(titles, channel) {
     if (lib.has(t.id)) return;
     try {
       const meta = await getMeta(t.type, t.id);
-      const runtime = meta.runtime || DEFAULT_RUNTIME[t.type] || 30;
+      const runtime = episodeRuntime(meta) || DEFAULT_RUNTIME[t.type] || 30;
       const entry = { id: t.id, type: t.type, name: meta.name || t.name, poster: meta.poster, background: meta.background, description: meta.description, runtime };
       if (t.type === 'movie' && meta.released && Date.parse(meta.released) > Date.now()) return; // not out yet
       if (t.type === 'series') {
@@ -415,6 +415,24 @@ export function startScheduler() {
 }
 
 /** Human label like "Modern Family S01E05 · Coal Digger". */
+/**
+ * The longest a guide item may be stretched to fit its file: the title's usual runtime plus 60% or 20 minutes,
+ * whichever is more (enough for extended cuts such as The Office "Superfan" episodes, ~40% longer). Measured
+ * from the runtime rather than the current slot, so repeated checks can't keep stretching it, and files
+ * reporting absurd lengths (broken headers, whole-season files) are ignored.
+ */
+export async function maxItemLength(item, channel) {
+  let runtime = null;
+  try {
+    runtime = episodeRuntime(await getMeta(item.type, item.meta_id));
+  } catch {
+    return Infinity; // can't tell what's normal right now, so don't judge
+  }
+  runtime = runtime || DEFAULT_RUNTIME[item.type] || 30;
+  const step = Math.max(1, channel.round_minutes || 1);
+  return roundUp(Math.max(runtime * 1.6, runtime + 20), step) * MIN;
+}
+
 export function itemLabel(r) {
   if (!r) return '';
   if (r.type === 'series' && r.season != null) {

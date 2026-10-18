@@ -9,6 +9,7 @@ import { startScheduler } from './scheduler.js';
 import { startReaper, ffmpegCaps, runnerStatus, stopRunner } from './playout.js';
 import { startPrefetcher } from './prefetch.js';
 import { mcpHandler } from './mcp.js';
+import { repairGuide } from './repair.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -77,6 +78,8 @@ server.listen(config.port, config.host, async () => {
   startReaper();
   startScheduler();
   startPrefetcher();
+  // Clean up any guide items an older build stretched too far.
+  setTimeout(() => repairGuide().catch((e) => log.error('guide repair failed:', e)), 3000).unref?.();
 });
 
 function shutdown() {

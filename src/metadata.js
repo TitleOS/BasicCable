@@ -89,6 +89,18 @@ export async function getMeta(type, id) {
 }
 
 /** Episodes in airing order, skipping specials (season 0) and anything not yet released. */
+/**
+ * Minutes per episode (or the movie's length). Cinemeta sometimes gives a miniseries' total runtime
+ * (Planet Earth: "538 min" for 11 episodes); anything over 2.5 hours on a series is treated as a total and
+ * divided by its episode count.
+ */
+export function episodeRuntime(meta) {
+  const r = meta.runtime;
+  if (!r || meta.type !== 'series' || r <= 150) return r || null;
+  const count = playableEpisodes(meta, { now: Infinity }).length;
+  return count > 1 && r / count >= 5 ? Math.round(r / count) : r;
+}
+
 export function playableEpisodes(meta, { includeSpecials = false, now = Date.now() } = {}) {
   const seen = new Set();
   return (meta.videos || [])
