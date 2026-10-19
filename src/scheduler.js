@@ -3,6 +3,7 @@ import { store } from './db.js';
 import { config, log } from './config.js';
 import { getMeta, playableEpisodes, expandWildcard, episodeRuntime } from './metadata.js';
 import { lastShown, noRepeatDays } from './history.js';
+import { breakAllowance } from './commercials.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -141,8 +142,9 @@ class Planner {
     return this.rows[this.rows.length - 1] || this.prevSaved;
   }
 
+  /** Guide time for a title: its runtime plus room for the commercial break after it, rounded up. */
   durationOf(entry) {
-    return roundUp(entry.runtime, this.channel.round_minutes) * MIN;
+    return roundUp(entry.runtime + breakAllowance(this.channel) / 60, this.channel.round_minutes) * MIN;
   }
 
   /**
@@ -373,7 +375,12 @@ async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = 
     let t;
     if (resumeAt != null) t = resumeAt;
     else if (last && last.end > now) t = last.end;
-    else t = DateTime.fromMillis(now, { zone }).startOf('hour').plus({ minutes: DateTime.fromMillis(now, { zone }).minute >= 30 ? 30 : 0 }).toMillis();
+    else {
+      // Start on the half hour before now, but never before the last row ends (an on-air item that was cut short
+      // with nothing to replace it), or the new rows would overlap it.
+      const halfHour = DateTime.fromMillis(now, { zone }).startOf('hour').plus({ minutes: DateTime.fromMillis(now, { zone }).minute >= 30 ? 30 : 0 }).toMillis();
+      t = Math.max(halfHour, last?.end ?? 0);
+    }
     if (t >= horizon) return true;
 
     const recent = store.recentEpg(channelId, 20).map((r) => r.meta_id);
@@ -456,7 +463,7 @@ export async function maxItemLength(item, channel) {
   }
   runtime = runtime || DEFAULT_RUNTIME[item.type] || 30;
   const step = Math.max(1, channel.round_minutes || 1);
-  return roundUp(Math.max(runtime * 1.6, runtime + 20), step) * MIN;
+  return roundUp(Math.max(runtime * 1.6, runtime + 20) + breakAllowance(channel) / 60, step) * MIN;
 }
 
 export function itemLabel(r) {

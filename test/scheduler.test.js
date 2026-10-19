@@ -261,3 +261,33 @@ test('recently shown: aired items are recorded and block repeats on the next pla
   rows = store.epgRange(ch.id, wed, wed + 6 * HOUR);
   assert.equal(rows[0].video_id, 'tt012:1:1');
 });
+
+test('commercial breaks get room in the guide after each program', async () => {
+  const ads = await import('../src/commercials.js');
+  seedSeries('tt020', 'Half Hour', 24, 1, 6);
+  const plain = store.createChannel({ name: 'No Ads', round_minutes: 5 });
+  const withAds = store.createChannel({ name: 'With Ads', round_minutes: 5, options: { commercialsPerBreak: 2, commercialBundles: ['Test Spots'] } });
+  for (const ch of [plain, withAds]) store.addSource(ch.id, { kind: 'series', ref: 'tt020', name: 'Half Hour' });
+  store.run(`INSERT INTO commercials(bundle, file, size, mtime, duration, status, added_at) VALUES ('Test Spots', 'a.mp4', 1, 1, 60, 'ready', 0), ('Test Spots', 'b.mp4', 1, 1, 60, 'ready', 0)`);
+  ads._test.bump();
+  const now = DateTime.fromISO('2026-10-14T09:00', { zone: ZONE }).toMillis();
+  await buildChannel(plain.id, { now });
+  await buildChannel(withAds.id, { now });
+  const len = (id) => { const r = store.epgRange(id, now, Infinity)[0]; return (r.end - r.start) / 60e3; };
+  assert.equal(len(plain.id), 25, '24 min rounded to 25');
+  assert.equal(len(withAds.id), 30, '24 min + 2 × 1 min of commercials, rounded to 30');
+});
+
+test('a guide restarted after an on-air cut never overlaps the cut item', async () => {
+  seedSeries('tt021', 'Cut', 30, 1, 5);
+  const ch = store.createChannel({ name: 'Cut', round_minutes: 0 });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt021', name: 'Cut' });
+  const halfHour = DateTime.fromISO('2026-10-14T13:00', { zone: ZONE }).toMillis();
+  // 13:00 item cut at 13:04 with nothing after it; the guide is built again at 13:07.
+  store.run(`INSERT INTO epg(channel_id, start, end, type, meta_id, video_id, title, origin, truncated) VALUES (?, ?, ?, 'series', 'tt021', 'tt021:1:1', 'Cut', 'fill', 1)`,
+    ch.id, halfHour, halfHour + 4 * 60e3);
+  await buildChannel(ch.id, { now: halfHour + 7 * 60e3 });
+  const rows = store.epgRange(ch.id, 0, Infinity);
+  assertContiguous(rows);
+  assert.equal(rows[1].start, halfHour + 4 * 60e3);
+});

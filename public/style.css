@@ -109,6 +109,11 @@ label.check { display: inline-flex; align-items: center; gap: 6px; cursor: point
 .now-line { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 2; pointer-events: none; }
 .now-line::before { content: ""; position: absolute; top: 0; left: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
 
+/* commercials page */
+.dropzone { border: 1px dashed var(--line); border-radius: var(--radius); padding: 18px; text-align: center; color: var(--muted); cursor: pointer; }
+.dropzone:hover, .dropzone.over { border-color: var(--accent-2); color: var(--text); background: var(--panel-2); }
+.ad-preview { width: 100%; max-width: 560px; border-radius: 8px; background: #000; margin-bottom: 12px; }
+
 /* channels page */
 .split { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
 .chan-art { width: 100%; max-width: 420px; aspect-ratio: 16 / 9; border-radius: 10px; margin-bottom: 14px; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }

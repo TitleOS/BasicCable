@@ -237,7 +237,7 @@ async function viewChannels(id) {
   if (!id || id === 'new') return editor.append(channelForm(null));
   const ch = channels.find((c) => String(c.id) === id);
   if (!ch) return editor.append(h('div', { class: 'empty' }, 'Channel not found.'));
-  editor.append(channelForm(ch), poolPanel(ch), slotsPanel(ch), historyPanel(ch), dangerPanel(ch));
+  editor.append(channelForm(ch), poolPanel(ch), slotsPanel(ch), breaksPanel(ch), historyPanel(ch), dangerPanel(ch));
 }
 
 function channelForm(ch) {
@@ -276,6 +276,7 @@ function channelForm(ch) {
         audioLanguage: f.audioLanguage.value, audio: f.audio.value, subtitles: f.subtitles.value, excludeKeywords: f.excludeKeywords.value,
         avoidDolbyVision: f.avoidDolbyVision.checked, includeSpecials: f.includeSpecials.checked,
         preferHdr: f.preferHdr.checked, preferHdr10: f.preferHdr10.checked, noRepeatDays: f.noRepeatDays.value,
+        commercialsPerBreak: o.commercialsPerBreak || 0, commercialBundles: o.commercialBundles || [],
       },
     };
     if (f.number.value) body.number = Number(f.number.value);
@@ -423,6 +424,36 @@ function slotsPanel(ch) {
           h('button', { class: 'btn small ghost danger', onclick: (e) => del(e.currentTarget, s) }, 'Delete'))))) : h('div', { class: 'empty' }, 'No slots — the whole day is auto-filled from the pool.'));
 }
 
+function breaksPanel(ch) {
+  const o = ch.options || {};
+  const count = h('select', {}, [0, 1, 2, 3].map((n) => h('option', { value: n, selected: n === (o.commercialsPerBreak || 0) }, n ? `${n} commercial${n > 1 ? 's' : ''} per break` : 'Off')));
+  const chosen = new Set(o.commercialBundles || []);
+  const boxes = h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Loading bundles…'));
+  const body = h('div', { class: 'grid-form' }, h('label', { class: 'field' }, 'Commercial breaks', count,
+    h('span', { class: 'hint' }, 'Played between programs, in the room the guide leaves after each one.')));
+  let bundles = [];
+  api('/api/commercials').then((r) => {
+    bundles = r.bundles;
+    boxes.replaceChildren(...(bundles.length
+      ? bundles.map((b) => h('label', { class: 'check' }, h('input', { type: 'checkbox', value: b.name, checked: chosen.has(b.name) }),
+        `${b.name} `, h('span', { class: 'muted' }, `(${b.ready} clip${b.ready === 1 ? '' : 's'})`)))
+      : [h('span', { class: 'muted' }, 'No bundles yet. ', h('a', { href: '#/commercials' }, 'Add some commercials'), ' first.')]));
+  }).catch((e) => boxes.replaceChildren(h('span', { class: 'muted' }, e.message)));
+  const save = (btn) => busy(btn, async () => {
+    const picked = [...boxes.querySelectorAll('input:checked')].map((i) => i.value);
+    await api(`/api/channels/${ch.id}`, { method: 'PUT', body: { options: { ...o, commercialsPerBreak: Number(count.value), commercialBundles: picked } } });
+    toast(Number(count.value) ? 'Commercial breaks saved' : 'Commercial breaks turned off');
+    route();
+  });
+  return h('div', { class: 'panel' },
+    h('h2', {}, 'Commercials'),
+    body,
+    h('div', { class: 'field', style: { marginTop: '12px' } }, 'Bundles', boxes,
+      h('span', { class: 'hint' }, 'Leave all unticked to use every bundle. Manage clips on the Commercials page.')),
+    h('div', { class: 'row', style: { marginTop: '12px' } }, h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', onclick: (e) => save(e.currentTarget) }, 'Save')));
+}
+
 function historyPanel(ch) {
   const body = h('div', { class: 'muted' }, 'Loading…');
   const days = h('select', {}, [1, 3, 7, 14, 30, 90].map((d) => h('option', { value: d, selected: d === 7 }, d === 1 ? 'Last 24 hours' : `Last ${d} days`)));
@@ -505,6 +536,95 @@ function dangerPanel(ch) {
         busy(e.currentTarget, async () => { await api(`/api/channels/${ch.id}`, { method: 'DELETE' }); toast('Channel deleted'); location.hash = '#/channels'; });
       },
     }, 'Delete channel'));
+}
+
+// ---------------------------------------------------------------- commercials
+
+const mmss = (s) => { const t = Math.round(s); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+const enc = encodeURIComponent;
+
+async function viewCommercials() {
+  const { bundles } = await api('/api/commercials');
+  const newName = h('input', { type: 'text', placeholder: 'e.g. 2000s Kids, 90s Saturday Morning, Adult Swim Bumps', style: { flex: 1, minWidth: '220px' } });
+  const create = (btn) => busy(btn, async () => {
+    if (!newName.value.trim()) return toast('Give the bundle a name', true);
+    await api('/api/commercials/bundles', { method: 'POST', body: { name: newName.value } });
+    toast(`Created ${newName.value.trim()}`);
+    route();
+  });
+  const scan = (btn) => busy(btn, async () => {
+    const r = await api('/api/commercials/scan', { method: 'POST' });
+    toast(`${r.added} new, ${r.removed} removed${r.pending ? `, converting ${r.pending}` : ''}`);
+    route();
+  });
+  $view.replaceChildren(
+    h('h1', {}, 'Commercials'),
+    h('p', { class: 'sub' }, 'Short clips (old commercials, bumpers, promos) grouped into bundles. Channels with commercial breaks turned on play 1–3 of them between programs.'),
+    h('div', { class: 'panel' },
+      h('div', { class: 'row' }, newName, h('button', { class: 'btn primary', onclick: (e) => create(e.currentTarget) }, 'New bundle'),
+        h('button', { class: 'btn', onclick: (e) => scan(e.currentTarget) }, 'Scan for new files')),
+      h('p', { class: 'hint' }, 'Upload clips below, or copy them into the bundle folders under commercials/ in the data volume and press Scan. ',
+        'Each clip is converted once (H.264, stereo AAC, levelled loudness) so it plays straight into the channel. Up to 5 minutes per clip.')),
+    ...(bundles.length ? bundles.map(bundlePanel) : [h('div', { class: 'empty' }, 'No bundles yet. Create one above, then upload some clips.')]));
+  if (bundles.some((b) => b.pending)) every(5000, async () => {
+    const r = await api('/api/commercials').catch(() => null);
+    if (r && !r.bundles.some((b) => b.pending)) route();
+  });
+}
+
+function bundlePanel(b) {
+  const list = h('div', { class: 'muted' }, 'Loading…');
+  const preview = h('div', {});
+  const files = h('input', { type: 'file', accept: 'video/*,.mkv,.ts,.mpg,.mpeg,.vob,.flv,.wmv', multiple: true, hidden: true });
+  const status = h('span', { class: 'muted' });
+  const upload = async (fileList) => {
+    const all = [...fileList];
+    for (let i = 0; i < all.length; i++) {
+      status.textContent = `Uploading ${i + 1} of ${all.length}: ${all[i].name}…`;
+      const res = await fetch(`/api/commercials/bundles/${enc(b.name)}/files/${enc(all[i].name)}`, { method: 'PUT', body: all[i] });
+      if (!res.ok) toast(`${all[i].name}: ${(await res.json().catch(() => ({}))).error || `HTTP ${res.status}`}`, true);
+    }
+    status.textContent = '';
+    toast(`Uploaded ${all.length} file${all.length === 1 ? '' : 's'}; converting`);
+    route();
+  };
+  files.addEventListener('change', () => files.files.length && upload(files.files));
+  const drop = h('div', { class: 'dropzone', onclick: () => files.click() }, 'Drop video files here, or click to choose', files);
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) upload(e.dataTransfer.files); });
+  const rename = (btn) => {
+    const name = prompt('Rename bundle', b.name);
+    if (!name || name === b.name) return;
+    busy(btn, async () => { await api(`/api/commercials/bundles/${enc(b.name)}`, { method: 'PUT', body: { name } }); toast('Renamed'); route(); });
+  };
+  const remove = (btn) => {
+    if (!confirm(`Delete the bundle "${b.name}" and its ${b.clips} clip${b.clips === 1 ? '' : 's'}? The files are deleted too.`)) return;
+    busy(btn, async () => { await api(`/api/commercials/bundles/${enc(b.name)}`, { method: 'DELETE' }); toast('Bundle deleted'); route(); });
+  };
+  api(`/api/commercials/bundles/${enc(b.name)}`).then(({ clips }) => {
+    if (!clips.length) return list.replaceChildren(h('div', { class: 'empty' }, 'No clips yet.'));
+    list.replaceChildren(h('table', { class: 'slots' }, clips.map((c) => h('tr', {},
+      h('td', {}, c.file),
+      h('td', { class: 'muted', style: { whiteSpace: 'nowrap' } }, c.duration ? mmss(c.duration) : ''),
+      h('td', {}, c.status === 'ready' ? h('span', { class: 'badge ok' }, 'ready')
+        : c.status === 'pending' ? h('span', { class: 'badge warn' }, 'converting')
+          : h('span', { class: 'badge warn', title: c.error }, `failed: ${c.error}`)),
+      h('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+        c.status === 'ready' ? h('button', { class: 'btn small ghost', onclick: () => preview.replaceChildren(
+          h('video', { src: `/api/commercials/clips/${c.id}/video`, controls: true, autoplay: true, class: 'ad-preview' })) }, 'Preview') : null,
+        h('button', { class: 'btn small ghost danger', onclick: (e) => busy(e.currentTarget, async () => {
+          await api(`/api/commercials/clips/${c.id}`, { method: 'DELETE' }); toast('Clip deleted'); route();
+        }) }, 'Delete'))))));
+  }).catch((e) => list.replaceChildren(h('div', { class: 'empty' }, e.message)));
+  return h('div', { class: 'panel' },
+    h('div', { class: 'row' }, h('h2', { style: { margin: 0 } }, b.name),
+      h('span', { class: 'muted' }, `${b.ready} clip${b.ready === 1 ? '' : 's'} · ${mmss(b.seconds)}${b.pending ? ` · converting ${b.pending}` : ''}${b.failed ? ` · ${b.failed} failed` : ''}`),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn small ghost', onclick: (e) => rename(e.currentTarget) }, 'Rename'),
+      h('button', { class: 'btn small ghost danger', onclick: (e) => remove(e.currentTarget) }, 'Delete')),
+    h('div', { style: { margin: '12px 0' } }, drop, status),
+    preview, list);
 }
 
 // ---------------------------------------------------------------- settings
@@ -660,6 +780,7 @@ async function route() {
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === v));
   try {
     if (v === 'channels') await viewChannels(arg);
+    else if (v === 'commercials') await viewCommercials();
     else if (v === 'settings') await viewSettings();
     else if (v === 'connect') await viewConnect();
     else await viewGuide();

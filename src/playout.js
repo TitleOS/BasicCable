@@ -7,6 +7,7 @@ import { headerArgs } from './probe.js';
 import { prepareStream, dropPrepared, skipUnplayable, preparedFor } from './prefetch.js';
 import { buildChannel, itemLabel } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
+import { perBreak, clipsFor, pickBreak, readyFile } from './commercials.js';
 
 // Read-ahead: ffmpeg reads up to READ_AHEAD_SECONDS ahead of real time, but each segment only appears in the
 // live playlist when its moment in the schedule arrives. Viewers stay on real time and in step with the guide,
@@ -19,6 +20,8 @@ const WINDOW = 10; // segments listed in the live playlist
 const PREROLL_SECONDS = 18; // published straight away on tune-in, so players can start
 const EARLY_FAIL_SECONDS = 15; // ffmpeg dying before producing this much video means the file is the problem
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const MIN_BREAK_GAP_MS = 10000; // a gap shorter than this before the next program isn't worth a commercial
+const recentAds = new Map(); // channel id -> clip ids played lately, newest last (outlives a channel restart)
 const BURN_PRESET = process.env.SUBTITLE_BURN_PRESET || 'veryfast';
 const EMPTY_VTT = 'WEBVTT\n\n';
 // ffmpeg writes WebVTT cue times on the same output timeline as the video (including -output_ts_offset), and
@@ -180,6 +183,7 @@ class ChannelRunner {
     let lastItem = null;
     let fails = 0;
     let failItem = null;
+    let breakBefore = null; // the program whose commercial break has already played
     while (!this.stopped) {
       const now = this.clock();
       let item = store.epgAt(this.channelId, now);
@@ -189,6 +193,13 @@ class ChannelRunner {
         this.setStatus({ state: 'offair', item: null, stream: null, message: 'Nothing scheduled' });
         await this.playSlate('Nothing scheduled on this channel', 'Add shows in the StreamTube web interface', 30);
         continue;
+      }
+      // A program just finished ahead of the next one's start: that's where the commercials go. Breaks are never
+      // guide items; they fill the room the guide leaves after each program, and stop at the next one's start.
+      if (lastItem && breakBefore !== item.id && item.start - now >= MIN_BREAK_GAP_MS) {
+        breakBefore = item.id;
+        await this.playBreak(item);
+        continue; // look at the guide again: it may have changed during the break
       }
       if (item.id !== failItem) { failItem = item.id; fails = 0; }
       const result = await this.playItem(item);
@@ -323,6 +334,37 @@ class ChannelRunner {
     if (await skipUnplayable(item, channel, { at: this.clock() })) return 'skipped';
     this.setStatus({ state: 'error', message: 'Every candidate stream failed to play' });
     return 'failed';
+  }
+
+  /** Commercials from the channel's bundles, as many as it asks for that fit before `next` starts. */
+  async playBreak(next) {
+    const channel = store.getChannel(this.channelId);
+    const count = perBreak(channel);
+    if (!count) return;
+    const recent = [...(recentAds.get(this.channelId) || [])];
+    const clips = pickBreak(clipsFor(channel), count, (next.start - this.clock()) / 1000 - 1, recent);
+    if (!clips.length) return;
+    prepareStream(next, channel).catch(() => {}); // have the next program ready when the break ends
+    this.setStatus({ state: 'break', item: { ...next, label: itemLabel(next) }, stream: null, message: `Commercial break before ${itemLabel(next)}` });
+    log.info(`channel ${channel.number}: commercial break before ${itemLabel(next)}: ${clips.map((c) => `${c.bundle}/${c.file}`).join(', ')}`);
+    for (const clip of clips) {
+      if (this.stopped || this.skipRequested) break;
+      const left = (next.start - this.clock()) / 1000;
+      if (left < 3) break;
+      const file = readyFile(clip);
+      if (!fs.existsSync(file)) continue; // deleted while we were deciding
+      recent.push(clip.id);
+      recentAds.set(this.channelId, recent.slice(-12));
+      const target = this.leadTarget(null);
+      const burst = Math.max(4, Math.min(target, target - this.leadSeconds()));
+      const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-readrate', '1'];
+      if (this.capsBurst) args.push('-readrate_initial_burst', String(Math.round(burst)));
+      // Clips were converted at ingest, so they copy straight in.
+      args.push('-i', file, '-t', Math.min(clip.duration, left).toFixed(2), '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-sn', '-dn');
+      await this.runFfmpeg(args);
+    }
+    // A skip during the break ends the break; it isn't meant for the program after it.
+    this.skipRequested = false;
   }
 
   mainArgs(cand, info, channel, offset, limit, subs, { transcode = false, burst = 20 } = {}) {

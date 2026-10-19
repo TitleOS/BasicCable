@@ -12,6 +12,7 @@ You build channels in a web UI that runs in a container on your network. Each ch
 - **Preferred and blocked releases.** Releases whose names contain a preferred word win over everything else, resolution included. The default is `Superfan`, so The Office plays its extended Superfan episodes when an addon has them. Blocked words (Settings, whole words, every channel) rule a release out entirely. The default blocks `YIFY` and `YTS`, whose small re-encodes look soft on a big screen.
 - **HDR.** Tick *Prefer HDR* on a channel to pick HDR10, HDR10+ or HLG over SDR, and *Prefer HDR10* to pick HDR10/HDR10+ first. Either one only reorders releases at the resolution the picker settled on; it never trades resolution for HDR. While *Avoid Dolby Vision-only releases* is ticked, a Dolby Vision file without an HDR10 layer doesn't count as HDR.
 - **No reruns too soon.** Everything that airs is recorded in a per-channel *Recently shown* history (kept 90 days, shown in the channel editor). A channel won't air the same episode or movie again within its *Don't repeat within* window, 3 days by default: if S02E03 aired Monday at 10 AM, it can't come back before Thursday 10 AM. If every choice is a repeat (a small pool), the one shown longest ago plays instead of dead air. Episodes cut short don't count.
+- **Commercial breaks.** Upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps"…) and have a channel play 1–3 of them between programs. See [Commercials](#commercials).
 - **Streams prepared ahead.** About 10 minutes before each program airs, StreamTube asks your addons, picks the file and checks it. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore.** Export your channels, pools, wildcards, slots and each show's progress as one JSON file, and import it into another install. See [Backup and restore](#backup-and-restore).
 - **One stream per device.** Each viewer IP watches one channel at a time, so channel surfing doesn't leave old channels running. See [Stream cap](#stream-cap).
@@ -108,6 +109,28 @@ How the track reaches the player depends on its format and the channel's **Engli
 - Subtitle files that sit next to the video in a torrent can't be used. Debrid links point at the video file alone.
 - Subtitles need ffmpeg 7.x. ffmpeg 8.0's real-time pacing slows to about half speed when a subtitle stream is included, so on 8.x StreamTube plays without subtitles and logs a warning. The Docker image ships 7.1.
 
+## Commercials
+
+The **Commercials** page holds your clip library. Clips are grouped into bundles, for example *2000s Kids*, *90s Saturday Morning* or *Adult Swim Bumps*. Create a bundle, then drop video files onto it (mp4, mkv, webm, mov, avi, ts, mpg…, up to 5 minutes each).
+
+Each clip is converted once, in the background, so it can be copied straight into a channel's stream without re-encoding at playback:
+- **Video:** H.264, at most 1080p, square pixels, and deinterlaced if it's an old TV rip.
+- **Audio:** stereo AAC with levelled loudness, so commercials aren't louder than the show. Clips without sound get a silent track.
+
+Turn breaks on per channel in the channel editor's **Commercials** panel:
+- **How many:** off, or 1, 2 or 3 commercials per break.
+- **Which bundles:** tick the ones the channel should use. If none are ticked, it uses all of them.
+
+How breaks fit the live guide:
+- **Room in the guide.** Every program gets extra time for the break that follows it. That's commercials per break times the average clip length of the chosen bundles, rounded up with the program's slot length. For example, a 24-minute episode with two 1-minute spots gets a 30-minute slot instead of 25.
+- **Between programs only.** The break plays after a program ends and stops at the next program's scheduled start. If it ends early, the next program starts a little early, as it does without commercials.
+- **Picking clips.** Clips are picked at random from the chosen bundles. Only clips that fit the time left are used, and the last dozen played on that channel are avoided.
+- **Breaks aren't guide items.** The guide, Recently shown and XMLTV only list programs. Tuning in during a break joins the break, and the next program follows.
+
+**Bulk loading:** clips live under `commercials/<bundle>/` in the data volume. To load many at once, copy them into those folders (or bind-mount a host folder on `/data/commercials`) and press **Scan for new files**. Files deleted from a folder drop out of the library on the next scan.
+
+**Backups and MCP:** backups keep each channel's commercial settings but not the clips, so copy the `commercials` folder separately if you move installs. Over MCP, `streamtube_list_commercials` shows the library, and `streamtube_update_channel` takes `commercials_per_break` and `commercial_bundles`.
+
 ## Backup and restore
 
 **Settings → Backup & restore** downloads a `streamtube-backup-<date>.json` file. It holds:
@@ -203,7 +226,7 @@ If you set `ADMIN_PASSWORD`, add `--header "Authorization: Bearer <password>"` (
 
 | Area | Tools |
 |---|---|
-| Look around | `streamtube_list_channels`, `streamtube_get_channel`, `streamtube_get_guide`, `streamtube_whats_on`, `streamtube_recently_shown`, `streamtube_server_status` |
+| Look around | `streamtube_list_channels`, `streamtube_get_channel`, `streamtube_get_guide`, `streamtube_whats_on`, `streamtube_recently_shown`, `streamtube_list_commercials`, `streamtube_server_status` |
 | Channels | `streamtube_create_channel` (settings, pool and slots in one call), `streamtube_update_channel`, `streamtube_bulk_update_channels`, `streamtube_delete_channel` |
 | Pool & slots | `streamtube_add_to_pool`, `streamtube_remove_from_pool`, `streamtube_set_wildcard_exclusions`, `streamtube_add_slots`, `streamtube_remove_slots` |
 | Titles | `streamtube_search_titles`, `streamtube_preview_wildcard` |

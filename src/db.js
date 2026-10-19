@@ -81,6 +81,19 @@ CREATE TABLE IF NOT EXISTS cursors (
   value TEXT NOT NULL,
   PRIMARY KEY (channel_id, key)
 );
+-- Commercial clips: source files in DATA_DIR/commercials/<bundle>/, converted copies in <bundle>/.ready/<id>.mp4.
+CREATE TABLE IF NOT EXISTS commercials (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bundle TEXT NOT NULL,
+  file TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  mtime INTEGER NOT NULL,
+  duration REAL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT NOT NULL DEFAULT '',
+  added_at INTEGER NOT NULL,
+  UNIQUE (bundle, file)
+);
 -- Recently shown: everything that aired on a channel, kept after the guide itself is pruned.
 CREATE TABLE IF NOT EXISTS history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

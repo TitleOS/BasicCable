@@ -6,6 +6,7 @@ import { log } from './config.js';
 import { findStreams, forgetStream } from './picker.js';
 import { probe } from './probe.js';
 import { extendItem, replaceItem, markUnplayable, maxItemLength, itemLabel } from './scheduler.js';
+import { breakAllowance } from './commercials.js';
 
 const READY_MS = 2 * 3600 * 1000; // debrid links stay valid for hours; re-check after this
 const RETRY_MS = 5 * 60 * 1000; // after finding nothing playable, wait before asking the addons again
@@ -79,7 +80,8 @@ export function preparedFor(item, channel) {
 async function fitGuideToFile(item, channel, info) {
   if (!info.duration || item.start <= Date.now()) return;
   const scheduled = item.end - item.start;
-  const actual = info.duration * 1000;
+  // The file plus the commercial break that follows it.
+  const actual = (info.duration + breakAllowance(channel)) * 1000;
   if (actual <= scheduled + 60000) return;
   if (actual > await maxItemLength(item, channel)) {
     log.info(`channel ${channel.number}: ${itemLabel(item)} reports ${Math.round(actual / 60000)} min, far past its usual runtime; ` +

@@ -15,6 +15,7 @@ import { addonBase } from './picker.js';
 import { repairGuide } from './repair.js';
 import { daysLabel } from './labels.js';
 import { recentlyShown, noRepeatDays } from './history.js';
+import { listBundles, perBreak, breakAllowance, MAX_PER_BREAK } from './commercials.js';
 import { parseDays, parseClock, parseDuration, minutesBetween, parseTitleSpec, normTitle, parseResolution } from './nl.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -182,7 +183,9 @@ function channelConfigLine(c) {
     `round to ${c.round_minutes || 0} min`, `subtitles ${o.subtitles || 'auto'}`, `audio ${o.audio || 'aac'}/${o.audioLanguage || 'eng'}`,
     o.excludeKeywords?.length ? `skip: ${o.excludeKeywords.join(', ')}` : null, o.avoidDolbyVision === false ? 'allows Dolby Vision' : null,
     o.includeSpecials ? 'includes specials' : null, o.preferHdr10 ? 'prefers HDR10' : null, o.preferHdr ? 'prefers HDR' : null,
-    noRepeatDays(c) ? `no repeats within ${noRepeatDays(c)} days` : 'repeats allowed', c.enabled ? null : 'DISABLED'].filter(Boolean).join(' · ');
+    noRepeatDays(c) ? `no repeats within ${noRepeatDays(c)} days` : 'repeats allowed',
+    perBreak(c) ? `${perBreak(c)} commercial${perBreak(c) > 1 ? 's' : ''} per break (${o.commercialBundles?.length ? o.commercialBundles.join(', ') : 'all bundles'})` : null,
+    c.enabled ? null : 'DISABLED'].filter(Boolean).join(' · ');
 }
 
 function channelSummary(c, now = Date.now()) {
@@ -239,10 +242,14 @@ const channelFields = {
   include_specials: z.boolean().optional().describe('Include season 0 specials'),
   prefer_hdr: z.boolean().optional().describe('Among releases at the chosen resolution, prefer HDR (HDR10, HDR10+, HLG) over SDR'),
   prefer_hdr10: z.boolean().optional().describe('Among releases at the chosen resolution, prefer HDR10/HDR10+ first'),
+  commercials_per_break: z.number().int().min(0).max(MAX_PER_BREAK).optional()
+    .describe('Commercials played between programs: 0 = no commercial breaks, 1-3 clips per break'),
+  commercial_bundles: z.array(z.string()).optional()
+    .describe('Commercial bundles this channel draws from (names from streamtube_list_commercials); [] = every bundle'),
   no_repeat_days: z.number().min(0).max(60).optional().describe('An episode or movie that aired waits this many days before airing again on the channel (default 3; 0 = no limit)'),
 };
 
-const OPTION_KEYS = { subtitles: 'subtitles', audio: 'audio', audio_language: 'audioLanguage', exclude_keywords: 'excludeKeywords', avoid_dolby_vision: 'avoidDolbyVision', include_specials: 'includeSpecials', prefer_hdr: 'preferHdr', prefer_hdr10: 'preferHdr10', no_repeat_days: 'noRepeatDays' };
+const OPTION_KEYS = { subtitles: 'subtitles', audio: 'audio', audio_language: 'audioLanguage', exclude_keywords: 'excludeKeywords', avoid_dolby_vision: 'avoidDolbyVision', include_specials: 'includeSpecials', prefer_hdr: 'preferHdr', prefer_hdr10: 'preferHdr10', no_repeat_days: 'noRepeatDays', commercials_per_break: 'commercialsPerBreak', commercial_bundles: 'commercialBundles' };
 
 /** Plain tool arguments -> the REST-style body ops.* expect. Options merge over the channel's current ones. */
 function channelBody(args, current = null) {
@@ -333,6 +340,26 @@ function registerTools(server) {
         `${next ? ` → next ${fmtTime(next.start)} ${itemLabel(next)}` : ''}${watching}`;
     });
     return text(`${fmtDay(now)} ${fmtTime(now)} (${tz()})\n${lines.join('\n') || 'No enabled channels.'}`);
+  });
+
+  server.registerTool('streamtube_list_commercials', {
+    title: 'List commercials',
+    description: 'The commercial library: bundles of short clips (old commercials, bumpers) and which channels play breaks from them. ' +
+      'Turn breaks on for a channel with streamtube_update_channel (commercials_per_break 1-3, commercial_bundles). Clips are uploaded in the web UI.',
+    inputSchema: z.object({}),
+    annotations: RO,
+  }, async () => {
+    const bundles = listBundles();
+    const using = store.listChannels().filter((c) => perBreak(c));
+    const lines = bundles.map((b) => {
+      const users = using.filter((c) => !c.options.commercialBundles?.length || c.options.commercialBundles.includes(b.name)).map((c) => c.number);
+      return `- **${b.name}**: ${b.ready} clip${b.ready === 1 ? '' : 's'}, ${mmss(b.seconds * 1000)} total` +
+        `${b.pending ? `, ${b.pending} converting` : ''}${b.failed ? `, ${b.failed} failed` : ''}${users.length ? ` · used by channel ${users.join(', ')}` : ''}`;
+    });
+    const chans = using.map((c) => `- ${c.number} ${c.name}: ${perBreak(c)} per break from ${c.options.commercialBundles?.length ? c.options.commercialBundles.join(', ') : 'all bundles'}` +
+      ` (about ${Math.round(breakAllowance(c))} s set aside after each program)`);
+    return text([bundles.length ? `Bundles:\n${lines.join('\n')}` : 'No commercial bundles yet. Create them and upload clips on the Commercials page of the web UI.',
+      chans.length ? `Channels with commercial breaks:\n${chans.join('\n')}` : 'No channel has commercial breaks turned on.'].join('\n\n'));
   });
 
   server.registerTool('streamtube_recently_shown', {

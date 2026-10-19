@@ -7,6 +7,8 @@ import { findStreams, rankStreams, addonBase, clearStreams, RESOLUTIONS } from '
 import { clearPrepared } from './prefetch.js';
 import { artFile } from './art.js';
 import { noRepeatDays, recentlyShown } from './history.js';
+import * as ads from './commercials.js';
+import fs from 'node:fs';
 import { runnerStatus, stopRunner, ffmpegCaps } from './playout.js';
 
 const A = { auth: true };
@@ -44,6 +46,10 @@ function channelInput(b, partial = false) {
       // Days before an episode or movie may air again on this channel (0 = no limit).
       noRepeatDays: o.noRepeatDays === undefined || o.noRepeatDays === '' ? 3 : Math.min(60, Math.max(0, Number(o.noRepeatDays) || 0)),
       includeSpecials: !!o.includeSpecials,
+      // Commercial breaks between programs: how many clips (0 = off) and from which bundles (none picked = all).
+      commercialsPerBreak: Math.max(0, Math.min(ads.MAX_PER_BREAK, parseInt(o.commercialsPerBreak, 10) || 0)),
+      commercialBundles: [...new Set((Array.isArray(o.commercialBundles) ? o.commercialBundles : String(o.commercialBundles || '').split(','))
+        .map((s) => String(s).trim()).filter(Boolean))],
       audio: o.audio === 'copy' ? 'copy' : 'aac',
       subtitles: ['auto', 'soft', 'off'].includes(o.subtitles) ? o.subtitles : 'auto',
       audioLanguage: String(o.audioLanguage || 'eng').trim().toLowerCase().slice(0, 3),
@@ -237,7 +243,8 @@ async function updateChannelOp(cur, b) {
   const c = store.updateChannel(cur.id, channelInput(b, true));
   const scheduleChanged = ['fill_mode', 'round_minutes'].some((k) => b[k] !== undefined && b[k] !== cur[k]) ||
     (b.options && !!b.options.includeSpecials !== !!cur.options.includeSpecials) ||
-    noRepeatDays(c) !== noRepeatDays(cur);
+    noRepeatDays(c) !== noRepeatDays(cur) ||
+    ads.breakAllowance(c) !== ads.breakAllowance(cur); // breaks need more (or less) room after each program
   if (b.resolution !== undefined || b.options || b.fallback !== undefined) {
     clearStreams(c.id);
     clearPrepared(c.id);
@@ -465,6 +472,59 @@ export function registerApi(router) {
       })),
     }));
     send(res, 200, { serverTime: now, from, to, channels });
+  }, A);
+
+  // --- commercials
+  const adErr = (fn) => async (req, res, params) => {
+    try {
+      await fn(req, res, params);
+    } catch (e) {
+      throw e instanceof HttpError ? e : new HttpError(e.status || 400, e.message);
+    }
+  };
+  router.get('/api/commercials', (req, res) => send(res, 200, { bundles: ads.listBundles(), maxPerBreak: ads.MAX_PER_BREAK }), A);
+  router.post('/api/commercials/scan', adErr(async (req, res) => send(res, 200, ads.scanLibrary())), A);
+  router.post('/api/commercials/bundles', adErr(async (req, res) => {
+    const b = await readJson(req);
+    send(res, 200, { name: ads.createBundle(b.name) });
+  }), A);
+  router.get('/api/commercials/bundles/:name', adErr(async (req, res, { name }) => send(res, 200, { name, clips: ads.listClips(name) })), A);
+  router.put('/api/commercials/bundles/:name', adErr(async (req, res, { name }) => {
+    const b = await readJson(req);
+    send(res, 200, { name: ads.renameBundle(name, b.name) });
+  }), A);
+  router.delete('/api/commercials/bundles/:name', adErr(async (req, res, { name }) => {
+    ads.deleteBundle(name);
+    send(res, 200, { ok: true });
+  }), A);
+  // Upload: the raw file is the request body (one file per request).
+  router.put('/api/commercials/bundles/:name/files/:file', adErr(async (req, res, { name, file }) => {
+    send(res, 200, await ads.saveUpload(name, file, req));
+  }), A);
+  router.delete('/api/commercials/clips/:id', adErr(async (req, res, { id }) => {
+    if (!ads.deleteClip(id)) throw new HttpError(404, 'No such clip');
+    send(res, 200, { ok: true });
+  }), A);
+  // The converted clip, for previewing in the browser (with Range support so it can seek).
+  router.get('/api/commercials/clips/:id/video', (req, res, { id }) => {
+    const clip = ads.getClip(id);
+    const file = clip && ads.readyFile(clip);
+    let st;
+    try { st = fs.statSync(file); } catch { throw new HttpError(404, 'This clip isn\'t ready yet'); }
+    const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    let start = 0;
+    let end = st.size - 1;
+    if (m) {
+      start = m[1] ? Number(m[1]) : Math.max(0, st.size - Number(m[2]));
+      end = m[1] && m[2] ? Math.min(Number(m[2]), end) : end;
+      if (start > end) return send(res, 416, '', { 'content-range': `bytes */${st.size}` });
+    }
+    res.writeHead(m ? 206 : 200, {
+      'content-type': 'video/mp4', 'accept-ranges': 'bytes', 'content-length': end - start + 1, 'cache-control': 'no-cache',
+      ...(m ? { 'content-range': `bytes ${start}-${end}/${st.size}` } : {}),
+    });
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(file, { start, end }).pipe(res);
   }, A);
 
   // Recently shown on a channel, newest first (?days=7).
