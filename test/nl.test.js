@@ -42,6 +42,10 @@ test('parseTitleSpec handles prefixes, years, ids and wildcards', () => {
   assert.equal(parseTitleSpec('tt0386676').imdb, 'tt0386676');
   assert.deepEqual(parseTitleSpec('movies: Batman*'), { query: 'Batman*', types: ['movie'], year: null, imdb: null, wildcard: true });
   assert.equal(parseTitleSpec('Blade Runner 2049').year, 2049); // ambiguous but harmless: search still finds it by name
+  // A year pins one title, so a * in its name is literal, with or without the prefix and parentheses.
+  assert.deepEqual(parseTitleSpec('movie: Thunderbolts* (2025)'), { query: 'Thunderbolts*', types: ['movie'], year: 2025, imdb: null, wildcard: false });
+  assert.equal(parseTitleSpec('Thunderbolts* 2025').wildcard, false);
+  assert.equal(parseTitleSpec('Thunderbolts*').wildcard, true);
   assert.equal(normTitle('The Office (US)'), 'the office us');
 });
 

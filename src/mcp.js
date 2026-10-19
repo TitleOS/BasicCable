@@ -26,6 +26,7 @@ wildcards like "Star Trek*") that plays whenever no weekly time slot is active, 
 
 - Refer to channels by number or name ("4", "Adult Swim"). Refer to shows and movies by name; add "movie:" or
   "show:" or a year ("Heat (1995)") to disambiguate, an IMDb id (tt...) to be exact, or * and ? for wildcards.
+  A title with a year is always matched exactly, so "Thunderbolts* (2025)" is the movie, not a wildcard.
 - Times are in the server's timezone (see streamtube_server_status). Days accept "weekdays", "weekends", "daily",
   "mon-fri", "mon, wed, fri"... Start times accept "8pm", "20:00"...
 - Tools that change things report what each title matched; tell the user, especially when a match looks off.
@@ -96,7 +97,8 @@ async function resolveTitle(input, { defaultTypes = null } = {}) {
     throw new Error(`No show or movie with IMDb id ${t.imdb}.`);
   }
   const types = t.types || defaultTypes || ['series', 'movie'];
-  const results = await search(t.query, types);
+  // Search by the plain name: a literal * or ? in a title ("Thunderbolts*") only confuses the catalog search.
+  const results = await search(t.query.replace(/[*?]/g, ' ').replace(/\s+/g, ' ').trim() || t.query, types);
   if (!results.length) throw new Error(`Nothing found for "${input}". Check the spelling, add a year, or use streamtube_search_titles.`);
   const q = normTitle(t.query);
   const qWords = q.split(' ').filter((w) => w.length > 1);
@@ -540,7 +542,7 @@ function registerTools(server) {
     description: 'Add shows, movies or wildcards to a channel\'s auto-fill pool, e.g. ["Bob\'s Burgers", "movies: Batman*", "tt0386676"]. Returns what each matched.',
     inputSchema: z.object({
       channel: z.union([z.string(), z.number()]),
-      titles: z.array(z.string()).min(1).describe('Names ("The Office"), "movie:"/"show:" prefixes, years ("Heat (1995)"), IMDb ids, or wildcards ("Star Trek*")'),
+      titles: z.array(z.string()).min(1).describe('Names ("The Office"), "movie:"/"show:" prefixes, years ("Heat (1995)"), IMDb ids, or wildcards ("Star Trek*"). A title with a year is matched exactly even if its name has * or ? ("Thunderbolts* (2025)")'),
     }),
     annotations: WRITE,
   }, async ({ channel, titles }) => {

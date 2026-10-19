@@ -101,7 +101,8 @@ export function parseTitleSpec(input) {
     year = Number(y[1]);
     s = s.slice(0, s.length - y[0].length).trim();
   }
-  const wildcard = /[*?]/.test(s);
+  // A year means one specific title, so * and ? are part of its name ("Thunderbolts* (2025)"), not a pattern.
+  const wildcard = !year && /[*?]/.test(s);
   return { query: s, types, year, imdb, wildcard };
 }
 
