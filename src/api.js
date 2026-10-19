@@ -501,6 +501,19 @@ export function registerApi(router) {
   router.put('/api/commercials/bundles/:name/files/:file', adErr(async (req, res, { name, file }) => {
     send(res, 200, await ads.saveUpload(name, file, req));
   }), A);
+  // A bundle as a zip of its original files, and a zip of clips into a bundle (?name=, created if needed).
+  router.get('/api/commercials/bundles/:name/export', adErr(async (req, res, { name }) => {
+    const zip = ads.bundleZip(name);
+    res.writeHead(200, {
+      'content-type': 'application/zip',
+      'content-disposition': `attachment; filename="${name.replace(/[^\w .()-]/g, '_')}.zip"; filename*=UTF-8''${encodeURIComponent(name)}.zip`,
+    });
+    zip.pipe(res);
+  }), A);
+  router.post('/api/commercials/import', adErr(async (req, res) => {
+    const name = new URL(req.url, 'http://x').searchParams.get('name');
+    send(res, 200, await ads.importZip(name, req));
+  }), A);
   router.delete('/api/commercials/clips/:id', adErr(async (req, res, { id }) => {
     if (!ads.deleteClip(id)) throw new HttpError(404, 'No such clip');
     send(res, 200, { ok: true });

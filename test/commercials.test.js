@@ -86,3 +86,85 @@ test('dropped files are converted into copyable H.264/AAC clips', { skip: !hasFf
   assert.equal(ads.scanLibrary().removed, 1);
   assert.equal(fs.existsSync(ads.readyFile(clip)), false);
 });
+
+// --- zip import/export
+const { default: yazl } = await import('yazl');
+const { default: yauzl } = await import('yauzl');
+const { Readable } = await import('node:stream');
+
+/** Build a zip on disk from { name: Buffer } and return its path. */
+async function makeZip(entries) {
+  const zip = new yazl.ZipFile();
+  for (const [name, data] of Object.entries(entries)) zip.addBuffer(data, name);
+  zip.end();
+  const file = path.join(os.tmpdir(), `st-zip-${Date.now()}-${Math.random().toString(36).slice(2)}.zip`);
+  await new Promise((res, rej) => zip.outputStream.pipe(fs.createWriteStream(file)).on('close', res).on('error', rej));
+  return file;
+}
+const zipNames = (file) => new Promise((resolve, reject) => {
+  yauzl.open(file, { lazyEntries: true }, (e, z) => {
+    if (e) return reject(e);
+    const names = [];
+    z.on('entry', (en) => { names.push(`${en.fileName}:${en.uncompressedSize}`); z.readEntry(); });
+    z.on('end', () => resolve(names.sort()));
+    z.readEntry();
+  });
+});
+const bytes = (n, fill = 1) => Buffer.alloc(n, fill);
+
+test('a zip of clips becomes a bundle; junk, traversal and clashes are handled', async () => {
+  const zip = await makeZip({
+    'Saturday Morning/Gushers.mp4': bytes(1000),
+    'Saturday Morning/Dunkaroos.mkv': bytes(2000),
+    'Saturday Morning/more/Gushers.mp4': bytes(1500), // same name, different file
+    '__MACOSX/Saturday Morning/._Gushers.mp4': bytes(10),
+    'Saturday Morning/.DS_Store': bytes(10),
+    'Saturday Morning/notes.txt': bytes(10),
+  });
+  const r = await ads.extractZip(zip, 'Saturday Morning');
+  assert.equal(r.bundle, 'Saturday Morning');
+  assert.deepEqual(r.files.sort(), ['Dunkaroos.mkv', 'Gushers (2).mp4', 'Gushers.mp4']);
+  assert.deepEqual(r.skipped, [{ file: 'Saturday Morning/notes.txt', reason: 'not a video file' }]);
+  const dir = path.join(ads.ROOT, 'Saturday Morning');
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => !f.startsWith('.')).sort(), ['Dunkaroos.mkv', 'Gushers (2).mp4', 'Gushers.mp4']);
+  assert.equal(ads.listClips('Saturday Morning').length, 3);
+
+  // Importing the same zip again adds nothing.
+  const again = await ads.extractZip(zip, 'Saturday Morning');
+  assert.equal(again.added, 0);
+  assert.equal(again.skipped.filter((s) => s.reason === 'already in this bundle').length, 3);
+
+  // Export gives back the originals under their bundle names.
+  const out = path.join(os.tmpdir(), `st-export-${Date.now()}.zip`);
+  await new Promise((res, rej) => ads.bundleZip('Saturday Morning').pipe(fs.createWriteStream(out)).on('close', res).on('error', rej));
+  assert.deepEqual(await zipNames(out), ['Dunkaroos.mkv:2000', 'Gushers (2).mp4:1500', 'Gushers.mp4:1000']);
+  assert.throws(() => ads.bundleZip('No Such Bundle'), /No bundle/);
+  ads.deleteBundle('Saturday Morning');
+});
+
+test('importZip takes the zip as a request body and rejects files that are not zips', async () => {
+  const zip = await makeZip({ 'Bumps/Toonami.mp4': bytes(800) });
+  const req = (file) => Object.assign(Readable.from(fs.readFileSync(file)), { headers: { 'content-length': String(fs.statSync(file).size) } });
+  const r = await ads.importZip('Adult Swim Bumps', req(zip));
+  assert.deepEqual(r.files, ['Toonami.mp4']);
+  const notZip = path.join(os.tmpdir(), `st-notzip-${Date.now()}.zip`);
+  fs.writeFileSync(notZip, 'definitely not a zip');
+  await assert.rejects(() => ads.importZip('Not A Zip', req(notZip)), (e) => e.status === 400 && /zip/.test(e.message));
+  assert.equal(ads.listBundles().some((b) => b.name === 'Not A Zip'), false, 'a failed import leaves no empty bundle');
+  assert.deepEqual(fs.readdirSync(path.join(ads.ROOT, '.incoming')), [], 'temporary uploads are cleaned up');
+  ads.deleteBundle('Adult Swim Bumps');
+});
+
+test('a zip with a path that climbs out of the folder is refused', async () => {
+  // yazl won't write "../", so write "zz/" and patch the name in both headers.
+  const file = await makeZip({ 'zz/escape.mp4': bytes(500) });
+  const buf = fs.readFileSync(file);
+  let i = -1;
+  while ((i = buf.indexOf('zz/escape.mp4', i + 1)) !== -1) buf.write('../', i);
+  fs.writeFileSync(file, buf);
+  await assert.rejects(() => ads.extractZip(file, 'Escape Test'), /invalid relative path/);
+  assert.equal(fs.existsSync(path.join(ads.ROOT, 'escape.mp4')), false);
+  assert.equal(fs.existsSync(path.join(ads.ROOT, '..', 'escape.mp4')), false);
+  assert.deepEqual(fs.readdirSync(path.join(ads.ROOT, 'Escape Test')), []);
+  ads.deleteBundle('Escape Test');
+});

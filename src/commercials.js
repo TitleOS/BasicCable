@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
+import yazl from 'yazl';
+import yauzl from 'yauzl';
 import { config, log } from './config.js';
 import { store } from './db.js';
 import { probe } from './probe.js';
@@ -17,6 +19,8 @@ export const ROOT = path.join(config.dataDir, 'commercials');
 export const MAX_PER_BREAK = 3;
 const MAX_CLIP_SECONDS = 5 * 60; // longer files aren't commercials; refuse them rather than air a movie
 const MAX_UPLOAD_BYTES = Number(process.env.COMMERCIAL_MAX_MB || 1024) * 1048576;
+// A whole bundle as one zip: videos barely compress, so the zip is about as big as its clips.
+const MAX_ZIP_BYTES = Number(process.env.COMMERCIAL_ZIP_MAX_MB || 20480) * 1048576;
 const MEDIA = /\.(mp4|m4v|mkv|webm|mov|avi|ts|m2ts|mpg|mpeg|vob|flv|wmv|3gp|ogv)$/i;
 const READY_DIR = '.ready';
 
@@ -185,6 +189,127 @@ export function scanLibrary() {
   if (added || removed) bump();
   ingestSoon();
   return { added, removed, pending: store.get(`SELECT COUNT(*) AS n FROM commercials WHERE status = 'pending'`).n };
+}
+
+// ---------------------------------------------------------------------------
+// bundles as zip files
+
+/** A bundle's original files as a zip stream (stored, not compressed: video doesn't shrink). */
+export function bundleZip(bundle) {
+  const b = bundleName(bundle);
+  if (!fs.existsSync(bundleDir(b))) throw Object.assign(new Error(`No bundle called "${b}"`), { status: 404 });
+  const zip = new yazl.ZipFile();
+  for (const c of listClips(b)) {
+    const file = path.join(bundleDir(b), c.file);
+    if (fs.existsSync(file)) zip.addFile(file, c.file, { compress: false });
+  }
+  zip.end();
+  return zip.outputStream;
+}
+
+/** "Name.mp4", "Name (2).mp4", "Name (3).mp4"… for as long as they exist, plus the first free one (last). */
+function nameVariants(dir, name) {
+  const ext = path.extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  const out = [name];
+  for (let i = 2; fs.existsSync(path.join(dir, out[out.length - 1])); i++) out.push(`${stem} (${i})${ext}`);
+  return out;
+}
+const freeName = (dir, name) => nameVariants(dir, name).pop();
+
+const openZip = (file) => new Promise((resolve, reject) => {
+  yauzl.open(file, { lazyEntries: true, autoClose: true, strictFileNames: false, validateEntrySizes: true }, (e, z) => (e ? reject(e) : resolve(z)));
+});
+const entryStream = (zip, entry) => new Promise((resolve, reject) => {
+  zip.openReadStream(entry, (e, s) => (e ? reject(e) : resolve(s)));
+});
+
+/**
+ * Add every video in a zip to a bundle (created if needed). Folders inside the zip are flattened, so zipping a
+ * folder of clips works; non-video files, macOS metadata and clips too big to be commercials are skipped and
+ * reported. A file already in the bundle with the same name and size isn't added twice.
+ */
+export async function extractZip(zipPath, bundle) {
+  const b = bundleName(bundle);
+  const dir = bundleDir(b);
+  let zip;
+  try {
+    zip = await openZip(zipPath);
+  } catch (e) {
+    throw Object.assign(new Error(`That doesn't look like a zip file (${e.message})`), { status: 400 });
+  }
+  fs.mkdirSync(dir, { recursive: true }); // only once we know it's a zip, so a bad upload leaves no empty bundle
+  const added = [];
+  const skipped = [];
+  let total = 0;
+
+  /** The name to save an entry under, or null to pass it over (reasons for skipping go in `skipped`). */
+  const nameFor = (entry) => {
+    const skip = (reason) => { skipped.push({ file: entry.fileName, reason }); return null; };
+    const parts = entry.fileName.split(/[\\/]/);
+    const base = parts.pop();
+    // Folders, and the clutter macOS and Windows add to zips, are passed over silently.
+    if (!base || base.startsWith('.') || parts.includes('__MACOSX') || /^(thumbs\.db|desktop\.ini)$/i.test(base)) return null;
+    let name;
+    try { name = clipFileName(base); } catch { return skip('not a video file'); }
+    if (entry.uncompressedSize > MAX_UPLOAD_BYTES) return skip(`over ${MAX_UPLOAD_BYTES / 1048576} MB`);
+    if ((total += entry.uncompressedSize) > MAX_ZIP_BYTES) return skip('the zip unpacks to more than the import limit');
+    // Already here under this name or a "(2)" copy of it: same file, as far as a re-import is concerned.
+    if (nameVariants(dir, name).slice(0, -1).some((n) => fs.statSync(path.join(dir, n)).size === entry.uncompressedSize)) return skip('already in this bundle');
+    return name;
+  };
+
+  const save = async (entry, name) => {
+    const tmp = path.join(dir, `.import-${process.pid}-${added.length}-${Date.now()}`);
+    try {
+      await pipeline(await entryStream(zip, entry), fs.createWriteStream(tmp));
+      const final = freeName(dir, name);
+      fs.renameSync(tmp, path.join(dir, final));
+      upsertClip(b, final, fs.statSync(path.join(dir, final)));
+      added.push(final);
+    } catch (e) {
+      fs.rmSync(tmp, { force: true });
+      skipped.push({ file: entry.fileName, reason: /encrypt/i.test(e.message) ? 'password-protected' : e.message });
+    }
+  };
+
+  await new Promise((resolve, reject) => {
+    zip.on('error', reject);
+    zip.on('end', resolve);
+    zip.on('entry', (entry) => {
+      const name = nameFor(entry);
+      (name ? save(entry, name) : Promise.resolve())
+        .then(() => zip.readEntry())
+        .catch((e) => { zip.close(); reject(e); });
+    });
+    zip.readEntry();
+  });
+  if (added.length) { bump(); ingestSoon(); }
+  log.info(`commercials: imported ${added.length} clip(s) into ${b}${skipped.length ? `, skipped ${skipped.length}` : ''}`);
+  return { bundle: b, added: added.length, files: added, skipped };
+}
+
+/** Import a zip sent as the raw request body. */
+export async function importZip(bundle, req) {
+  const b = bundleName(bundle);
+  const len = Number(req.headers['content-length'] || 0);
+  const tooBig = () => Object.assign(new Error(`That zip is over ${MAX_ZIP_BYTES / 1048576} MB`), { status: 413 });
+  if (len > MAX_ZIP_BYTES) throw tooBig();
+  const incoming = path.join(ROOT, '.incoming');
+  fs.mkdirSync(incoming, { recursive: true });
+  const tmp = path.join(incoming, `${process.pid}-${Date.now()}.zip`);
+  let size = 0;
+  try {
+    await pipeline(req, async function* limit(source) {
+      for await (const chunk of source) {
+        if ((size += chunk.length) > MAX_ZIP_BYTES) throw tooBig();
+        yield chunk;
+      }
+    }, fs.createWriteStream(tmp));
+    return await extractZip(tmp, b);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------

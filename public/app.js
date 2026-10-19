@@ -552,6 +552,33 @@ async function viewCommercials() {
     toast(`Created ${newName.value.trim()}`);
     route();
   });
+  // Import a zip of clips as a bundle (named after the zip unless a name is typed). XHR, for upload progress.
+  const zipInput = h('input', { type: 'file', accept: '.zip,application/zip', hidden: true });
+  const zipStatus = h('span', { class: 'muted' });
+  const importBtn = h('button', { class: 'btn', onclick: () => zipInput.click() }, 'Import bundle (.zip)');
+  zipInput.addEventListener('change', () => {
+    const file = zipInput.files[0];
+    if (!file) return;
+    const name = newName.value.trim() || file.name.replace(/\.zip$/i, '');
+    importBtn.disabled = true;
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/commercials/import?name=${enc(name)}`);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) zipStatus.textContent = `Uploading ${file.name}: ${Math.round((e.loaded / e.total) * 100)}%`; };
+    xhr.upload.onload = () => { zipStatus.textContent = `Unpacking ${file.name}…`; };
+    xhr.onloadend = () => {
+      importBtn.disabled = false;
+      zipInput.value = '';
+      let r = {};
+      try { r = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
+      if (xhr.status !== 200) { zipStatus.textContent = ''; return toast(r.error || `Import failed (HTTP ${xhr.status})`, true); }
+      const skipped = r.skipped || [];
+      zipStatus.textContent = skipped.length ? `Skipped ${skipped.length}: ${skipped.slice(0, 5).map((s) => `${s.file} (${s.reason})`).join('; ')}${skipped.length > 5 ? '…' : ''}` : '';
+      toast(`Imported ${r.added} clip${r.added === 1 ? '' : 's'} into ${r.bundle}; converting`);
+      if (!skipped.length) route();
+      else setTimeout(route, 8000);
+    };
+    xhr.send(file);
+  });
   const scan = (btn) => busy(btn, async () => {
     const r = await api('/api/commercials/scan', { method: 'POST' });
     toast(`${r.added} new, ${r.removed} removed${r.pending ? `, converting ${r.pending}` : ''}`);
@@ -562,8 +589,11 @@ async function viewCommercials() {
     h('p', { class: 'sub' }, 'Short clips (old commercials, bumpers, promos) grouped into bundles. Channels with commercial breaks turned on play 1–3 of them between programs.'),
     h('div', { class: 'panel' },
       h('div', { class: 'row' }, newName, h('button', { class: 'btn primary', onclick: (e) => create(e.currentTarget) }, 'New bundle'),
+        importBtn, zipInput,
         h('button', { class: 'btn', onclick: (e) => scan(e.currentTarget) }, 'Scan for new files')),
-      h('p', { class: 'hint' }, 'Upload clips below, or copy them into the bundle folders under commercials/ in the data volume and press Scan. ',
+      zipStatus,
+      h('p', { class: 'hint' }, 'Upload clips below, import a whole bundle from a .zip of clips (it takes the zip\'s name unless you type one above), ',
+        'or copy them into the bundle folders under commercials/ in the data volume and press Scan. ',
         'Each clip is converted once (H.264, stereo AAC, levelled loudness) so it plays straight into the channel. Up to 5 minutes per clip.')),
     ...(bundles.length ? bundles.map(bundlePanel) : [h('div', { class: 'empty' }, 'No bundles yet. Create one above, then upload some clips.')]));
   if (bundles.some((b) => b.pending)) every(5000, async () => {
@@ -621,6 +651,7 @@ function bundlePanel(b) {
     h('div', { class: 'row' }, h('h2', { style: { margin: 0 } }, b.name),
       h('span', { class: 'muted' }, `${b.ready} clip${b.ready === 1 ? '' : 's'} · ${mmss(b.seconds)}${b.pending ? ` · converting ${b.pending}` : ''}${b.failed ? ` · ${b.failed} failed` : ''}`),
       h('span', { class: 'spacer' }),
+      h('a', { class: 'btn small ghost', href: `/api/commercials/bundles/${enc(b.name)}/export`, download: `${b.name}.zip` }, 'Export .zip'),
       h('button', { class: 'btn small ghost', onclick: (e) => rename(e.currentTarget) }, 'Rename'),
       h('button', { class: 'btn small ghost danger', onclick: (e) => remove(e.currentTarget) }, 'Delete')),
     h('div', { style: { margin: '12px 0' } }, drop, status),

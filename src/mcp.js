@@ -345,7 +345,7 @@ function registerTools(server) {
   server.registerTool('streamtube_list_commercials', {
     title: 'List commercials',
     description: 'The commercial library: bundles of short clips (old commercials, bumpers) and which channels play breaks from them. ' +
-      'Turn breaks on for a channel with streamtube_update_channel (commercials_per_break 1-3, commercial_bundles). Clips are uploaded in the web UI.',
+      'Turn breaks on for a channel with streamtube_update_channel (commercials_per_break 1-3, commercial_bundles). Clips are uploaded, and bundles imported/exported as .zip files, on the web UI\'s Commercials page.',
     inputSchema: z.object({}),
     annotations: RO,
   }, async () => {
