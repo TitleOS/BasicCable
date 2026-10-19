@@ -11,6 +11,7 @@ import { startPrefetcher } from './prefetch.js';
 import { mcpHandler } from './mcp.js';
 import { repairGuide } from './repair.js';
 import { prerenderArt } from './art.js';
+import { startHistory } from './history.js';
 import { store } from './db.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -78,6 +79,7 @@ server.listen(config.port, config.host, async () => {
   if (!caps.ok) log.error(`ffmpeg not found (${caps.error}); live playback will not work`);
   else log.info(`ffmpeg ${caps.version}${caps.burst ? '' : ' (no initial burst support, tuning in will be slower)'}`);
   startReaper();
+  startHistory();
   startScheduler();
   startPrefetcher();
   // Clean up any guide items an older build stretched too far.

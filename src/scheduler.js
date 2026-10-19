@@ -2,9 +2,11 @@ import { DateTime } from 'luxon';
 import { store } from './db.js';
 import { config, log } from './config.js';
 import { getMeta, playableEpisodes, expandWildcard, episodeRuntime } from './metadata.js';
+import { lastShown, noRepeatDays } from './history.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
 // A gap shorter than this at the end of a block is absorbed by letting the previous item run on,
 // instead of starting something that would be cut off.
 const ABSORB_GAP = 10 * MIN;
@@ -117,12 +119,21 @@ function roundUp(minutes, step) {
  * each row records the previous values of cursors it moved so a rebuild can rewind them exactly.
  */
 class Planner {
-  constructor(channel, lib, cursors, recent) {
+  constructor(channel, lib, cursors, recent, shown = new Map(), noRepeatMs = 0) {
     this.channel = channel;
     this.lib = lib;
     this.cursors = cursors;
     this.recent = recent; // recently scheduled meta ids/video ids, newest first
+    this.shown = shown; // video id -> when it last aired (or is planned to) in full
+    this.noRepeatMs = noRepeatMs;
     this.rows = [];
+  }
+
+  /** True if this video aired (or is planned) within the channel's no-repeat window of `at`. */
+  isRepeat(videoId, at) {
+    if (!this.noRepeatMs) return false;
+    const last = this.shown.get(videoId);
+    return last != null && Math.abs(at - last) < this.noRepeatMs;
   }
 
   /** The row that ends where planning continues: the last planned row, or the last saved one. */
@@ -136,35 +147,44 @@ class Planner {
 
   /**
    * Next episode of a show according to its per-channel cursor (wraps around at the end), stepping over
-   * episodes with no playable stream. Null when none of the show's episodes can be played right now.
+   * episodes with no playable stream and episodes shown within the no-repeat window. When every playable
+   * episode is a repeat, the one shown longest ago, flagged `repeat`. Null when nothing can be played now.
    */
-  nextEpisode(entry, order) {
+  nextEpisode(entry, order, at) {
     const eps = entry.episodes;
+    let ok;
     if (order === 'random') {
-      const ok = eps.filter((e) => !isUnplayable(e.id));
-      return ok.length ? ok[Math.floor(Math.random() * ok.length)] : null;
+      ok = eps.filter((e) => !isUnplayable(e.id));
+      const fresh = ok.filter((e) => !this.isRepeat(e.id, at));
+      if (fresh.length) return { ep: fresh[Math.floor(Math.random() * fresh.length)], repeat: false };
+    } else {
+      const last = this.cursors[`ep:${entry.id}`];
+      const idx = last ? eps.findIndex((e) => e.id === last) : -1;
+      ok = [];
+      for (let i = 1; i <= eps.length; i++) {
+        const ep = eps[(idx + i) % eps.length];
+        if (isUnplayable(ep.id)) continue;
+        if (!this.isRepeat(ep.id, at)) return { ep, repeat: false };
+        ok.push(ep);
+      }
     }
-    const last = this.cursors[`ep:${entry.id}`];
-    const idx = last ? eps.findIndex((e) => e.id === last) : -1;
-    for (let i = 1; i <= eps.length; i++) {
-      const ep = eps[(idx + i) % eps.length];
-      if (!isUnplayable(ep.id)) return ep;
-    }
-    return null;
+    if (!ok.length) return null;
+    const oldest = ok.reduce((a, b) => ((this.shown.get(b.id) ?? 0) < (this.shown.get(a.id) ?? 0) ? b : a));
+    return { ep: oldest, repeat: true };
   }
 
   /** Candidate item for a title, without committing cursors. Null if nothing of it is playable. */
-  candidate(entry, order) {
+  candidate(entry, order, at) {
     if (entry.type === 'series') {
-      const ep = this.nextEpisode(entry, order);
-      return ep ? { entry, video: ep, duration: this.durationOf(entry) } : null;
+      const next = this.nextEpisode(entry, order, at);
+      return next ? { entry, video: next.ep, duration: this.durationOf(entry), repeat: next.repeat, lastShown: this.shown.get(next.ep.id) ?? 0 } : null;
     }
     if (isUnplayable(entry.id)) return null;
-    return { entry, video: null, duration: this.durationOf(entry) };
+    return { entry, video: null, duration: this.durationOf(entry), repeat: this.isRepeat(entry.id, at), lastShown: this.shown.get(entry.id) ?? 0 };
   }
 
-  /** Choose from several titles. mode: shuffle | sequential | random */
-  pickFrom(titles, mode, remaining, poolKey) {
+  /** Choose from several titles to start at `at`. mode: shuffle | sequential | random */
+  pickFrom(titles, mode, remaining, poolKey, at) {
     const entries = titles.map((t) => this.lib.get(t.id)).filter(Boolean);
     if (!entries.length) return null;
     let ordered;
@@ -189,8 +209,11 @@ class Planner {
         .map((x) => x.e);
     }
     const order = mode === 'random' ? 'random' : 'sequential';
-    const cands = ordered.map((e) => this.candidate(e, order)).filter(Boolean);
+    let cands = ordered.map((e) => this.candidate(e, order, at)).filter(Boolean);
     if (!cands.length) return null;
+    // Repeats only when everything is one, and then whatever was shown longest ago.
+    const fresh = cands.filter((c) => !c.repeat);
+    cands = fresh.length ? fresh : cands.sort((a, b) => a.lastShown - b.lastShown);
     // Prefer the first title that fits the time left; otherwise the shortest one.
     return cands.find((c) => c.duration <= remaining) || cands.sort((a, b) => a.duration - b.duration)[0];
   }
@@ -220,6 +243,7 @@ class Planner {
     };
     this.rows.push(row);
     this.recent.unshift(entry.id);
+    if (!truncated) this.shown.set(row.video_id, start);
     return row;
   }
 
@@ -232,10 +256,10 @@ class Planner {
     let t = from;
     while (t < to && t < horizon) {
       const remaining = to - t;
-      const cand = this.pickFrom(titles, mode, remaining, poolKey);
+      const cand = this.pickFrom(titles, mode, remaining, poolKey, t);
       if (!cand) return t;
       const alt = cand.duration > remaining && remaining > ABSORB_GAP && filler?.titles.length
-        ? this.pickFrom(filler.titles, filler.mode, remaining, 'pool') : null;
+        ? this.pickFrom(filler.titles, filler.mode, remaining, 'pool', t) : null;
       if (cand.duration <= remaining) {
         this.commit(cand, t, t + cand.duration, origin, poolKey);
         t += cand.duration;
@@ -353,7 +377,9 @@ async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = 
     if (t >= horizon) return true;
 
     const recent = store.recentEpg(channelId, 20).map((r) => r.meta_id);
-    const planner = new Planner(channel, lib, store.getCursors(channelId), recent);
+    const noRepeatMs = noRepeatDays(channel) * DAY;
+    const shown = noRepeatMs ? lastShown(channelId, t - noRepeatMs) : new Map();
+    const planner = new Planner(channel, lib, store.getCursors(channelId), recent, shown, noRepeatMs);
     const lastSaved = store.epgLast(channelId);
     if (lastSaved && lastSaved.end === t && !isUnplayable(lastSaved.video_id)) planner.prevSaved = { ...lastSaved };
     const occs = slotOccurrences(slots, t, horizon, zone);

@@ -207,3 +207,57 @@ test('a series runtime that is really the whole-series total is split per episod
   const rows = store.epgRange(ch.id, Date.now(), Infinity);
   assert.ok(rows.every((r) => r.end - r.start <= 60 * 60e3), `slots: ${[...new Set(rows.map((r) => (r.end - r.start) / 60e3))]}`);
 });
+
+test('no-repeat window: nothing airs twice within the channel\'s window while something fresh is available', async () => {
+  seedSeries('tt010', 'Tiny', 30, 1, 4); // 4 episodes
+  seedSeries('tt011', 'Long', 30, 5, 10); // 50 episodes
+  const ch = store.createChannel({ name: 'NoRepeat', round_minutes: 0, fill_mode: 'random', options: { noRepeatDays: 1 } });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt010', name: 'Tiny' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt011', name: 'Long' });
+  const now = DateTime.fromISO('2026-10-14T06:00', { zone: ZONE }).toMillis();
+  await buildChannel(ch.id, { now });
+  const rows = store.epgRange(ch.id, 0, Infinity);
+  assert.ok(rows.length >= 90);
+  const last = new Map();
+  for (const r of rows) {
+    if (last.has(r.video_id)) assert.ok(r.start - last.get(r.video_id) >= 24 * HOUR, `${r.video_id} repeated after ${(r.start - last.get(r.video_id)) / HOUR}h`);
+    last.set(r.video_id, r.start);
+  }
+});
+
+test('recently shown: aired items are recorded and block repeats on the next plan', async () => {
+  const { recordAired, recentlyShown } = await import('../src/history.js');
+  seedSeries('tt012', 'Trio', 30, 1, 3);
+  const ch = store.createChannel({ name: 'History', round_minutes: 0, fill_mode: 'sequential' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt012', name: 'Trio' });
+  const day = DateTime.fromISO('2026-10-12T10:00', { zone: ZONE }).toMillis(); // Monday 10am
+  // Monday 10am: S01E01 aired in full; 10:30 S01E02 was cut short after 10 minutes.
+  const row = (video, start, end, truncated = 0) => store.run(
+    `INSERT INTO epg(channel_id, start, end, type, meta_id, video_id, title, episode_title, season, episode, origin, truncated)
+     VALUES (?, ?, ?, 'series', 'tt012', ?, 'Trio', '', 1, ?, 'fill', ?)`, ch.id, start, end, video, Number(video.split(':')[2]), truncated);
+  row('tt012:1:1', day, day + 30 * 60e3);
+  row('tt012:1:2', day + 30 * 60e3, day + 40 * 60e3, 1);
+  recordAired(day + 60 * 60e3);
+  const hist = recentlyShown(ch.id, { now: day + 60 * 60e3 });
+  assert.deepEqual(hist.map((h) => [h.video_id, h.complete]), [['tt012:1:2', 0], ['tt012:1:1', 1]]);
+  // Recording again changes nothing.
+  assert.equal(recordAired(day + 60 * 60e3), 0);
+
+  // Wednesday: the guide is gone (pruned), but the history remembers Monday. Default window: 3 days.
+  store.run('DELETE FROM epg WHERE channel_id = ?', ch.id);
+  const wed = day + 2 * 24 * HOUR;
+  await buildChannel(ch.id, { now: wed });
+  let rows = store.epgRange(ch.id, wed, wed + 6 * HOUR);
+  assert.notEqual(rows[0].video_id, 'tt012:1:1', 'Monday\'s episode is not shown again on Wednesday');
+  assert.ok(rows.some((r) => r.video_id === 'tt012:1:2'), 'the cut-short episode may air again');
+  // With only three episodes something has to repeat eventually; it's whatever aired longest ago.
+  assert.ok(rows.length > 3);
+
+  // Thursday 10am onwards, Monday's episode is fair game again; with the window off it is right away.
+  store.updateChannel(ch.id, { options: { noRepeatDays: 0 } });
+  store.run('DELETE FROM epg WHERE channel_id = ?', ch.id);
+  store.run('DELETE FROM cursors WHERE channel_id = ?', ch.id);
+  await buildChannel(ch.id, { now: wed });
+  rows = store.epgRange(ch.id, wed, wed + 6 * HOUR);
+  assert.equal(rows[0].video_id, 'tt012:1:1');
+});

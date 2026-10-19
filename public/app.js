@@ -237,12 +237,12 @@ async function viewChannels(id) {
   if (!id || id === 'new') return editor.append(channelForm(null));
   const ch = channels.find((c) => String(c.id) === id);
   if (!ch) return editor.append(h('div', { class: 'empty' }, 'Channel not found.'));
-  editor.append(channelForm(ch), poolPanel(ch), slotsPanel(ch), dangerPanel(ch));
+  editor.append(channelForm(ch), poolPanel(ch), slotsPanel(ch), historyPanel(ch), dangerPanel(ch));
 }
 
 function channelForm(ch) {
   const c = ch || { name: '', number: '', logo: '', resolution: state.info?.defaultResolution || 1080, fallback: 'lower', fill_mode: 'shuffle', round_minutes: 5, enabled: 1, options: {} };
-  const o = { avoidDolbyVision: true, audio: 'aac', audioLanguage: 'eng', excludeKeywords: [], subtitles: 'auto', ...c.options };
+  const o = { avoidDolbyVision: true, audio: 'aac', audioLanguage: 'eng', excludeKeywords: [], subtitles: 'auto', noRepeatDays: 3, ...c.options };
   const f = {
     name: h('input', { type: 'text', value: c.name, placeholder: 'e.g. Sitcoms' }),
     number: h('input', { type: 'number', min: 1, value: c.number, placeholder: 'auto' }),
@@ -263,6 +263,9 @@ function channelForm(ch) {
     excludeKeywords: h('input', { type: 'text', value: (o.excludeKeywords || []).join(', '), placeholder: 'e.g. HEVC, x265, REMUX' }),
     avoidDolbyVision: h('input', { type: 'checkbox', checked: o.avoidDolbyVision !== false }),
     includeSpecials: h('input', { type: 'checkbox', checked: !!o.includeSpecials }),
+    preferHdr: h('input', { type: 'checkbox', checked: !!o.preferHdr }),
+    preferHdr10: h('input', { type: 'checkbox', checked: !!o.preferHdr10 }),
+    noRepeatDays: h('input', { type: 'number', min: 0, max: 60, step: 0.5, value: o.noRepeatDays ?? 3 }),
     enabled: h('input', { type: 'checkbox', checked: !!c.enabled }),
   };
   const save = async (btn) => busy(btn, async () => {
@@ -272,6 +275,7 @@ function channelForm(ch) {
       options: {
         audioLanguage: f.audioLanguage.value, audio: f.audio.value, subtitles: f.subtitles.value, excludeKeywords: f.excludeKeywords.value,
         avoidDolbyVision: f.avoidDolbyVision.checked, includeSpecials: f.includeSpecials.checked,
+        preferHdr: f.preferHdr.checked, preferHdr10: f.preferHdr10.checked, noRepeatDays: f.noRepeatDays.value,
       },
     };
     if (f.number.value) body.number = Number(f.number.value);
@@ -292,11 +296,14 @@ function channelForm(ch) {
       field('Audio language', f.audioLanguage, 'ISO 639-2, e.g. eng, spa, jpn'),
       field('Audio', f.audio),
       field('English subtitles', f.subtitles, 'Prefers an SDH track; image subs (Blu-ray PGS) need re-encoding to show'),
-      field('Skip streams containing', f.excludeKeywords, 'Comma separated')),
+      field('Skip streams containing', f.excludeKeywords, 'Comma separated'),
+      field('Don\'t repeat within (days)', f.noRepeatDays, 'Anything that aired waits this long before airing again. 0 = no limit')),
     h('div', { class: 'row', style: { marginTop: '14px' } },
       h('label', { class: 'check' }, f.enabled, 'Enabled'),
       h('label', { class: 'check' }, f.avoidDolbyVision, 'Avoid Dolby Vision-only releases'),
       h('label', { class: 'check' }, f.includeSpecials, 'Include specials (season 0)'),
+      h('label', { class: 'check', title: 'Among releases at the chosen resolution, pick HDR (HDR10, HDR10+, HLG) over SDR' }, f.preferHdr, 'Prefer HDR'),
+      h('label', { class: 'check', title: 'Among releases at the chosen resolution, pick HDR10 / HDR10+ first' }, f.preferHdr10, 'Prefer HDR10'),
       h('span', { class: 'spacer' }),
       h('button', { class: 'btn primary', onclick: (e) => save(e.currentTarget) }, ch ? 'Save' : 'Create channel')));
 }
@@ -416,6 +423,37 @@ function slotsPanel(ch) {
           h('button', { class: 'btn small ghost danger', onclick: (e) => del(e.currentTarget, s) }, 'Delete'))))) : h('div', { class: 'empty' }, 'No slots — the whole day is auto-filled from the pool.'));
 }
 
+function historyPanel(ch) {
+  const body = h('div', { class: 'muted' }, 'Loading…');
+  const days = h('select', {}, [1, 3, 7, 14, 30, 90].map((d) => h('option', { value: d, selected: d === 7 }, d === 1 ? 'Last 24 hours' : `Last ${d} days`)));
+  const load = async () => {
+    try {
+      const r = await api(`/api/channels/${ch.id}/history?days=${days.value}`);
+      if (!r.items.length) return body.replaceChildren(h('div', { class: 'empty' }, 'Nothing has aired yet in this period.'));
+      let day = '';
+      const rows = [];
+      for (const it of r.items) {
+        const d = fmtDay(it.start);
+        if (d !== day) { rows.push(h('tr', {}, h('th', { colspan: 2 }, d))); day = d; }
+        rows.push(h('tr', {}, h('td', { class: 'muted', style: { whiteSpace: 'nowrap', width: '1%' } }, fmtTime(it.start)),
+          h('td', {}, it.label, it.complete ? null : h('span', { class: 'badge', style: { marginLeft: '6px' }, title: 'Cut short, so it may air again' }, 'cut short'))));
+      }
+      body.replaceChildren(h('table', { class: 'slots' }, rows));
+    } catch (e) {
+      body.replaceChildren(h('div', { class: 'empty' }, e.message));
+    }
+  };
+  days.addEventListener('change', load);
+  load();
+  const win = ch.options?.noRepeatDays ?? 3;
+  return h('div', { class: 'panel' },
+    h('div', { class: 'row' }, h('h2', { style: { margin: 0 } }, 'Recently shown'), h('span', { class: 'spacer' }), days),
+    h('p', { class: 'hint', style: { marginBottom: '12px' } }, win > 0
+      ? `Episodes and movies don't air again for ${win} day${win === 1 ? '' : 's'} unless nothing else is left. Items cut short don't count.`
+      : 'Repeats are allowed any time on this channel.'),
+    body);
+}
+
 function slotEditor(ch, slot) {
   const s = slot || { days: '1,2,3,4,5', start: '20:00', minutes: 60, content: null, play_order: 'sequential' };
   const on = new Set(String(s.days).split(',').map(Number));
@@ -481,6 +519,7 @@ async function viewSettings() {
   const res = h('select', {}, [2160, 1440, 1080, 720, 576, 480].map((r) => h('option', { value: r, selected: r === s.defaultResolution }, `${r}p`)));
   const oneStream = h('input', { type: 'checkbox', checked: s.oneStreamPerIp !== false });
   const prefer = h('input', { type: 'text', value: (s.preferKeywords || []).join(', '), placeholder: 'e.g. Superfan, Extended' });
+  const block = h('input', { type: 'text', value: (s.blockKeywords || []).join(', '), placeholder: 'e.g. YIFY, YTS' });
   const prefetch = h('input', { type: 'number', min: 0, max: 60, value: s.prefetchMinutes ?? 10 });
   const testOut = h('div', {});
   const test = (btn) => busy(btn, async () => {
@@ -502,7 +541,7 @@ async function viewSettings() {
     }
   });
   const save = (btn) => busy(btn, async () => {
-    await api('/api/settings', { method: 'PUT', body: { streamAddons: addons.value, metaAddon: meta.value, timezone: tz.value, publicUrl: pub.value, defaultResolution: Number(res.value), oneStreamPerIp: oneStream.checked, preferKeywords: prefer.value, prefetchMinutes: Number(prefetch.value) } });
+    await api('/api/settings', { method: 'PUT', body: { streamAddons: addons.value, metaAddon: meta.value, timezone: tz.value, publicUrl: pub.value, defaultResolution: Number(res.value), oneStreamPerIp: oneStream.checked, preferKeywords: prefer.value, blockKeywords: block.value, prefetchMinutes: Number(prefetch.value) } });
     state.info = await api('/api/info');
     state.tz = state.info.timezone;
     toast('Settings saved');
@@ -528,6 +567,8 @@ async function viewSettings() {
       h('div', { class: 'grid-form', style: { marginTop: '12px' } },
         h('label', { class: 'field' }, 'Prefer releases containing', prefer,
           h('span', { class: 'hint' }, 'Comma separated. A match beats every other release, even at a different resolution. "Superfan" picks The Office extended episodes.')),
+        h('label', { class: 'field' }, 'Never use releases containing', block,
+          h('span', { class: 'hint' }, 'Comma separated, whole words, every channel. CAM, telesync and TVSYNC releases are always skipped.')),
         h('label', { class: 'field' }, 'Prepare streams ahead (minutes)', prefetch,
           h('span', { class: 'hint' }, 'Find, pick and check each program’s file this long before it airs, so tuning in starts right away. 0 turns it off.'))),
       h('label', { class: 'check', style: { marginTop: '14px' } }, oneStream, 'One stream per viewer IP'),

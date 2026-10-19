@@ -14,6 +14,7 @@ import { runnerStatus, ffmpegCaps, interruptRunner, publishedEdge } from './play
 import { addonBase } from './picker.js';
 import { repairGuide } from './repair.js';
 import { daysLabel } from './labels.js';
+import { recentlyShown, noRepeatDays } from './history.js';
 import { parseDays, parseClock, parseDuration, minutesBetween, parseTitleSpec, normTitle, parseResolution } from './nl.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -178,7 +179,8 @@ function channelConfigLine(c) {
   return [`${c.resolution}p (fallback ${c.fallback})`, { shuffle: 'shuffle shows', sequential: 'rotate shows in order', random: 'random episodes' }[c.fill_mode],
     `round to ${c.round_minutes || 0} min`, `subtitles ${o.subtitles || 'auto'}`, `audio ${o.audio || 'aac'}/${o.audioLanguage || 'eng'}`,
     o.excludeKeywords?.length ? `skip: ${o.excludeKeywords.join(', ')}` : null, o.avoidDolbyVision === false ? 'allows Dolby Vision' : null,
-    o.includeSpecials ? 'includes specials' : null, c.enabled ? null : 'DISABLED'].filter(Boolean).join(' · ');
+    o.includeSpecials ? 'includes specials' : null, o.preferHdr10 ? 'prefers HDR10' : null, o.preferHdr ? 'prefers HDR' : null,
+    noRepeatDays(c) ? `no repeats within ${noRepeatDays(c)} days` : 'repeats allowed', c.enabled ? null : 'DISABLED'].filter(Boolean).join(' · ');
 }
 
 function channelSummary(c, now = Date.now()) {
@@ -233,9 +235,12 @@ const channelFields = {
   exclude_keywords: z.array(z.string()).optional().describe('Skip releases whose name contains any of these, e.g. ["HEVC","REMUX"]; [] clears'),
   avoid_dolby_vision: z.boolean().optional().describe('Rank Dolby Vision-only releases last (default true)'),
   include_specials: z.boolean().optional().describe('Include season 0 specials'),
+  prefer_hdr: z.boolean().optional().describe('Among releases at the chosen resolution, prefer HDR (HDR10, HDR10+, HLG) over SDR'),
+  prefer_hdr10: z.boolean().optional().describe('Among releases at the chosen resolution, prefer HDR10/HDR10+ first'),
+  no_repeat_days: z.number().min(0).max(60).optional().describe('An episode or movie that aired waits this many days before airing again on the channel (default 3; 0 = no limit)'),
 };
 
-const OPTION_KEYS = { subtitles: 'subtitles', audio: 'audio', audio_language: 'audioLanguage', exclude_keywords: 'excludeKeywords', avoid_dolby_vision: 'avoidDolbyVision', include_specials: 'includeSpecials' };
+const OPTION_KEYS = { subtitles: 'subtitles', audio: 'audio', audio_language: 'audioLanguage', exclude_keywords: 'excludeKeywords', avoid_dolby_vision: 'avoidDolbyVision', include_specials: 'includeSpecials', prefer_hdr: 'preferHdr', prefer_hdr10: 'preferHdr10', no_repeat_days: 'noRepeatDays' };
 
 /** Plain tool arguments -> the REST-style body ops.* expect. Options merge over the channel's current ones. */
 function channelBody(args, current = null) {
@@ -328,6 +333,31 @@ function registerTools(server) {
     return text(`${fmtDay(now)} ${fmtTime(now)} (${tz()})\n${lines.join('\n') || 'No enabled channels.'}`);
   });
 
+  server.registerTool('streamtube_recently_shown', {
+    title: 'Recently shown',
+    description: "What aired on a channel over the last few days, newest first, from the channel's history (kept 90 days). Items cut short are marked; they don't count against the channel's no-repeat window.",
+    inputSchema: z.object({
+      channel: z.union([z.string(), z.number()]).describe('Channel number or name'),
+      days: z.number().min(0.5).max(90).default(3),
+      limit: z.number().int().min(1).max(500).default(100),
+    }),
+    annotations: RO,
+  }, async ({ channel, days, limit }) => {
+    const c = resolveChannel(channel);
+    const rows = recentlyShown(c.id, { days, limit });
+    const win = noRepeatDays(c);
+    const head = `### ${c.number} · ${c.name}: last ${days} day${days === 1 ? '' : 's'} (${win ? `no repeats within ${win} days` : 'repeats allowed'}; times in ${tz()})`;
+    if (!rows.length) return text(`${head}\nNothing aired in this period.`);
+    let day = '';
+    const out = [head];
+    for (const r of rows) {
+      const d = fmtDay(r.aired_at);
+      if (d !== day) { out.push(`**${d}**`); day = d; }
+      out.push(`- ${fmtTime(r.aired_at)} ${itemLabel(r)}${r.complete ? '' : ' [cut short]'}`);
+    }
+    return text(out.join('\n'));
+  });
+
   server.registerTool('streamtube_search_titles', {
     title: 'Search titles',
     description: 'Search shows and movies (Cinemeta, the same catalog Stremio uses). Use it to check a name or find the exact title/IMDb id before adding it.',
@@ -407,6 +437,7 @@ function registerTools(server) {
       `Metadata addon: ${s.metaAddon}`,
       `Timezone: ${s.timezone}`,
       `Preferred release words: ${(s.preferKeywords || []).join(', ') || '(none)'}`,
+      `Blocked release words: ${(s.blockKeywords || []).join(', ') || '(none)'} (CAM/telesync/TVSYNC always skipped)`,
       `Prepare streams ahead: ${s.prefetchMinutes} min${s.prefetchMinutes ? '' : ' (off)'}`,
       `One stream per viewer IP: ${s.oneStreamPerIp ? 'on' : 'off'}`,
       `Default resolution for new channels: ${s.defaultResolution}p`,
@@ -744,10 +775,11 @@ function registerTools(server) {
 
   server.registerTool('streamtube_update_settings', {
     title: 'Update settings',
-    description: 'Change server settings: timezone, preferred release words (e.g. ["Superfan"]), how many minutes ahead streams are prepared, the one-stream-per-device cap, default resolution for new channels, public URL, metadata addon.',
+    description: 'Change server settings: timezone, preferred release words (e.g. ["Superfan"]), blocked release words (e.g. ["YIFY"]), how many minutes ahead streams are prepared, the one-stream-per-device cap, default resolution for new channels, public URL, metadata addon.',
     inputSchema: z.object({
       timezone: z.string().optional().describe('IANA name, e.g. America/Chicago'),
       prefer_keywords: z.array(z.string()).optional().describe('Release-name words that win over everything else; [] clears'),
+      block_keywords: z.array(z.string()).optional().describe('Release-name words (whole words) never used on any channel, e.g. ["YIFY","YTS"]; [] clears'),
       prefetch_minutes: z.number().int().min(0).max(60).optional().describe('Prepare streams this long before airtime; 0 turns it off'),
       one_stream_per_ip: z.boolean().optional(),
       default_resolution: z.union([z.number(), z.string()]).optional(),
@@ -759,6 +791,7 @@ function registerTools(server) {
     const patch = {};
     if (a.timezone !== undefined) patch.timezone = a.timezone;
     if (a.prefer_keywords !== undefined) patch.preferKeywords = a.prefer_keywords;
+    if (a.block_keywords !== undefined) patch.blockKeywords = a.block_keywords;
     if (a.prefetch_minutes !== undefined) patch.prefetchMinutes = a.prefetch_minutes;
     if (a.one_stream_per_ip !== undefined) patch.oneStreamPerIp = a.one_stream_per_ip;
     if (a.default_resolution !== undefined) patch.defaultResolution = typeof a.default_resolution === 'number' ? a.default_resolution : parseResolution(a.default_resolution);

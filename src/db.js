@@ -16,6 +16,8 @@ const DEFAULT_SETTINGS = {
   oneStreamPerIp: true,
   // Releases whose name contains one of these words win over everything else (e.g. The Office "Superfan" cuts).
   preferKeywords: ['Superfan'],
+  // Releases whose name contains one of these words (whole words) are never used, on any channel.
+  blockKeywords: ['YIFY', 'YTS'],
   // Find, rank and probe each item's stream this many minutes before it airs (0 turns it off).
   prefetchMinutes: 10,
 };
@@ -79,6 +81,23 @@ CREATE TABLE IF NOT EXISTS cursors (
   value TEXT NOT NULL,
   PRIMARY KEY (channel_id, key)
 );
+-- Recently shown: everything that aired on a channel, kept after the guide itself is pruned.
+CREATE TABLE IF NOT EXISTS history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  aired_at INTEGER NOT NULL,
+  ended_at INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  meta_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  episode_title TEXT NOT NULL DEFAULT '',
+  season INTEGER,
+  episode INTEGER,
+  complete INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (channel_id, video_id, aired_at)
+);
+CREATE INDEX IF NOT EXISTS history_channel_aired ON history(channel_id, aired_at);
 CREATE TABLE IF NOT EXISTS meta_cache (key TEXT PRIMARY KEY, json TEXT NOT NULL, fetched_at INTEGER NOT NULL);
 `;
 

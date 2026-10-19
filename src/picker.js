@@ -7,7 +7,11 @@ export const RESOLUTIONS = [2160, 1440, 1080, 720, 576, 480];
 const UNCACHED = /\b(download|uncached|not cached)\b|⏳|⬇️|\[(?:rd|ad|pm|tb|dl|ed|oc|pp|pk)\s*download\]/i;
 const CACHED = /\+\]|⚡|\bcached\b|\[(?:rd|ad|pm|tb|dl|ed|oc|pp|pk)\+\]/i;
 const DOLBY_VISION = /\b(dv|dovi|dolby[ .-]?vision)\b/i;
-const JUNK = /\b(cam|camrip|hdcam|telesync|hdts|telecine|screener)\b/i;
+// HDR10 and HDR10+ (a plain "HDR" tag is HDR10 in practice, and so is a Dolby Vision file with an HDR10 base layer).
+const HDR10 = /\bhdr(?:10(?:\+|plus)?)?(?![a-z0-9])/i;
+const HLG = /\bhlg\b/i;
+// Theatre recordings and TV-synced audio: never worth airing.
+const JUNK = /\b(cam|camrip|cam[ .-]rip|hdcam|hqcam|telesync|hdts|tsrip|hdtc|telecine|screener|dvdscr|pdvd|predvd|tv[ .-]?sync)\b/i;
 const JUNK_CASED = /\b(TS|TC|SCR)\b/;
 
 export function addonBase(url) {
@@ -30,6 +34,20 @@ export function parseResolution(text) {
   return null;
 }
 
+/** Whole-word match for a blacklist entry, so "YTS" catches "[YTS.MX]" but not "nights". */
+function wordMatcher(k) {
+  const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s._-]+');
+  return new RegExp(`(?:^|[^a-z0-9])${esc}(?![a-z0-9])`, 'i');
+}
+
+/** "hdr10" (HDR10/HDR10+/HDR), "dv" (Dolby Vision only), "hlg" or null (SDR or unlabelled). */
+export function parseHdr(text) {
+  if (HDR10.test(text)) return 'hdr10';
+  if (DOLBY_VISION.test(text)) return 'dv';
+  if (HLG.test(text)) return 'hlg';
+  return null;
+}
+
 function parseSize(text) {
   const m = text.match(/(\d+(?:[.,]\d+)?)\s*(tb|gb|mb)\b/i);
   if (!m) return null;
@@ -49,14 +67,27 @@ export function resolutionOrder(target, fallback = 'lower') {
 }
 
 /**
+ * How much a channel wants this HDR format, lower is better. "Prefer HDR" puts any HDR ahead of SDR (Dolby
+ * Vision-only files don't count while the channel avoids them); "Prefer HDR10" puts HDR10/HDR10+ ahead of both.
+ */
+function hdrRank(hdr, opts, avoidDV) {
+  const anyHdr = hdr === 'hdr10' || hdr === 'hlg' || (hdr === 'dv' && !avoidDV);
+  if (opts.preferHdr10) return hdr === 'hdr10' ? 0 : opts.preferHdr && anyHdr ? 1 : 2;
+  if (opts.preferHdr) return anyHdr ? 0 : 1;
+  return 0;
+}
+
+/**
  * Rank playable debrid streams for a channel. Returns candidates best-first.
  * `prefer` lists words (e.g. "Superfan") that put a release ahead of everything else, resolution included;
- * among preferred releases the usual resolution rules still apply.
+ * among preferred releases the usual resolution rules still apply. `block` lists release words (e.g. "YIFY")
+ * that are never used, on any channel. HDR preferences only reorder releases of the same resolution.
  */
-export function rankStreams(streams, channel, prefer = []) {
+export function rankStreams(streams, channel, prefer = [], block = []) {
   const order = resolutionOrder(channel.resolution || 1080, channel.fallback);
   const opts = channel.options || {};
   const exclude = (opts.excludeKeywords || []).map((k) => k.trim().toLowerCase()).filter(Boolean);
+  const blocked = block.map((k) => String(k).trim()).filter(Boolean).map(wordMatcher);
   const avoidDV = opts.avoidDolbyVision !== false;
   const preferred = prefer.map((k) => String(k).trim().toLowerCase()).filter(Boolean);
 
@@ -68,10 +99,12 @@ export function rankStreams(streams, channel, prefer = []) {
     if (JUNK.test(text) || JUNK_CASED.test(text)) return;
     const lower = text.toLowerCase();
     if (exclude.some((k) => lower.includes(k))) return;
+    if (blocked.some((re) => re.test(text))) return;
     const isPreferred = preferred.some((k) => lower.includes(k));
     const resolution = parseResolution(text);
     const rank = resolution ? order.indexOf(resolution) : order.length;
-    const dv = DOLBY_VISION.test(text) && !/\bhdr10\b/i.test(text);
+    const hdr = parseHdr(text);
+    const dv = hdr === 'dv';
     out.push({
       stream: s,
       url: s.url,
@@ -82,7 +115,8 @@ export function rankStreams(streams, channel, prefer = []) {
       cached: CACHED.test(text),
       addon: s._addon,
       preferred: isPreferred,
-      score: [isPreferred ? 0 : 1, rank, avoidDV && dv ? 1 : 0, CACHED.test(text) ? 0 : 1, i],
+      hdr,
+      score: [isPreferred ? 0 : 1, rank, hdrRank(hdr, opts, avoidDV), avoidDV && dv ? 1 : 0, CACHED.test(text) ? 0 : 1, i],
     });
   });
   out.sort((a, b) => {
@@ -120,7 +154,8 @@ export async function findStreams(item, channel, { fresh = false } = {}) {
     if (r.status === 'fulfilled') streams.push(...r.value);
     else log.warn(`stream addon #${i + 1} failed for ${item.video_id}: ${r.reason?.message}`);
   });
-  const candidates = rankStreams(streams, channel, store.getSettings().preferKeywords || []);
+  const settings = store.getSettings();
+  const candidates = rankStreams(streams, channel, settings.preferKeywords || [], settings.blockKeywords || []);
   log.info(`streams for ${item.video_id}: ${streams.length} found, ${candidates.length} playable` +
     (candidates[0] ? `, best ${candidates[0].resolution || '?'}p` : ''));
   cache.set(key, { at: Date.now(), candidates });

@@ -8,8 +8,10 @@ You build channels in a web UI that runs in a container on your network. Each ch
 - **Time slots.** Weekly blocks such as "Weeknights 8:00 PM: Modern Family" or "Weekends 10 PM–1 AM: `Batman*` movies".
 - **Wildcards.** `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. You can untick any match. New titles that match are picked up each day.
 - **English subtitles.** StreamTube looks for an English SDH track in the file, then the first English or unlabelled one. Text subtitles become a selectable caption track. Image subtitles (Blu-ray PGS) are burned into the picture. See [Subtitles](#subtitles).
-- **Target resolution per channel.** The picker uses the exact resolution when it can. Otherwise it takes the next best: by default the nearest lower one, or optionally the nearest higher one. It only uses cached, direct debrid links, and it skips CAM/TS releases, Dolby Vision-only files (optional) and any keywords you list.
-- **Preferred releases.** Releases whose names contain a preferred word win over everything else, resolution included. The default is `Superfan`, so The Office plays its extended Superfan episodes when an addon has them.
+- **Target resolution per channel.** The picker uses the exact resolution when it can. Otherwise it takes the next best: by default the nearest lower one, or optionally the nearest higher one. It only uses cached, direct debrid links, and it skips CAM, telesync and TVSYNC releases, Dolby Vision-only files (optional) and any keywords you list.
+- **Preferred and blocked releases.** Releases whose names contain a preferred word win over everything else, resolution included. The default is `Superfan`, so The Office plays its extended Superfan episodes when an addon has them. Blocked words (Settings, whole words, every channel) rule a release out entirely. The default blocks `YIFY` and `YTS`, whose small re-encodes look soft on a big screen.
+- **HDR.** Tick *Prefer HDR* on a channel to pick HDR10, HDR10+ or HLG over SDR, and *Prefer HDR10* to pick HDR10/HDR10+ first. Either one only reorders releases at the resolution the picker settled on; it never trades resolution for HDR. While *Avoid Dolby Vision-only releases* is ticked, a Dolby Vision file without an HDR10 layer doesn't count as HDR.
+- **No reruns too soon.** Everything that airs is recorded in a per-channel *Recently shown* history (kept 90 days, shown in the channel editor). A channel won't air the same episode or movie again within its *Don't repeat within* window, 3 days by default: if S02E03 aired Monday at 10 AM, it can't come back before Thursday 10 AM. If every choice is a repeat (a small pool), the one shown longest ago plays instead of dead air. Episodes cut short don't count.
 - **Streams prepared ahead.** About 10 minutes before each program airs, StreamTube asks your addons, picks the file and checks it. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore.** Export your channels, pools, wildcards, slots and each show's progress as one JSON file, and import it into another install. See [Backup and restore](#backup-and-restore).
 - **One stream per device.** Each viewer IP watches one channel at a time, so channel surfing doesn't leave old channels running. See [Stream cap](#stream-cap).
@@ -82,6 +84,7 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 - **Runtimes** come from Cinemeta, which gives a single per-series value such as "21 min". Real files differ by a minute or two, so each channel rounds runtimes up (5 minutes by default). If a file ends early, the next program starts early and catches back up to the guide. If a file runs long, it's cut at its scheduled end. Pick a larger rounding if you see endings get clipped. With stream prefetching on, files that run longer, such as Superfan cuts, are caught before they air and given their full length.
 - **Slots win.** Auto-fill items never run into a slot. Leftover time at the end of a block goes to the previous item if it's under 10 minutes. Otherwise a fitting item from the pool fills it. An episode that has to be cut short airs again next time instead of being skipped.
 - **Episode memory** is per channel and per show, and is shared between the pool and slots. Specials (season 0) and unreleased episodes are skipped.
+- **No-repeat window.** The planner skips anything that aired, or is already planned, in full within the channel's window, counting both the history and the guide ahead. In-order shows skip past such an episode; random ones pick another. The window is measured from start time to start time. A guide planned before you change the window keeps its items until you rebuild it (editing the window rebuilds that channel's guide).
 - Editing a channel replans everything after the program that's on now. What's airing keeps playing.
 
 ## Subtitles
@@ -200,7 +203,7 @@ If you set `ADMIN_PASSWORD`, add `--header "Authorization: Bearer <password>"` (
 
 | Area | Tools |
 |---|---|
-| Look around | `streamtube_list_channels`, `streamtube_get_channel`, `streamtube_get_guide`, `streamtube_whats_on`, `streamtube_server_status` |
+| Look around | `streamtube_list_channels`, `streamtube_get_channel`, `streamtube_get_guide`, `streamtube_whats_on`, `streamtube_recently_shown`, `streamtube_server_status` |
 | Channels | `streamtube_create_channel` (settings, pool and slots in one call), `streamtube_update_channel`, `streamtube_bulk_update_channels`, `streamtube_delete_channel` |
 | Pool & slots | `streamtube_add_to_pool`, `streamtube_remove_from_pool`, `streamtube_set_wildcard_exclusions`, `streamtube_add_slots`, `streamtube_remove_slots` |
 | Titles | `streamtube_search_titles`, `streamtube_preview_wildcard` |

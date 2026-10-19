@@ -83,3 +83,38 @@ test('prefetch lookups are spaced 3 to 30 seconds apart', async () => {
     assert.ok(d >= 3000 && d <= 30000, `delay ${d}`);
   }
 });
+
+test('blacklisted release words (whole words) and CAM/TVSYNC releases are never used', () => {
+  const list = [
+    s('[RD+] T\n2160p', 'Star Wars (1977) [2160p] [4K] [BluRay] [5.1] [YTS.MX]'),
+    s('[RD+] T\n1080p', 'Star.Wars.1977.1080p.BluRay.x264-YIFY'),
+    s('[RD+] T\n1080p', 'Star Wars 1977 1080p TVSYNC'),
+    s('[RD+] T\n1080p', 'Star Wars 1977 1080p TV-Sync AAC'),
+    s('[RD+] T\n1080p', 'Star.Wars.1977.HQCAM.1080p'),
+    s('[RD+] T\n1080p', 'Star.Wars.Knights.1977.1080p.BluRay-GROUP'),
+  ];
+  const ranked = rankStreams(list, { resolution: 1080, options: {} }, [], ['YIFY', 'YTS']);
+  assert.equal(ranked.length, 1);
+  assert.match(ranked[0].label, /Knights/, '"YTS" must not match inside "Knights"');
+  // Without a blacklist only the CAM/TVSYNC ones go.
+  assert.equal(rankStreams(list, { resolution: 1080, options: {} }).length, 3);
+});
+
+test('HDR preferences reorder releases of the same resolution only', () => {
+  const list = [
+    s('[RD+] T\n2160p', 'Movie 2160p WEB-DL SDR'),
+    s('[RD+] T\n2160p', 'Movie 2160p HLG'),
+    s('[RD+] T\n2160p', 'Movie 2160p HDR10+ x265'),
+    s('[RD+] T\n2160p', 'Movie 2160p DV'),
+    s('[RD+] T\n1080p', 'Movie 1080p HDR'),
+  ];
+  const order = (options) => rankStreams(list, { resolution: 2160, options }).map((r) => `${r.resolution}:${r.hdr || 'sdr'}`);
+  assert.deepEqual(order({}), ['2160:sdr', '2160:hlg', '2160:hdr10', '2160:dv', '1080:hdr10']);
+  assert.deepEqual(order({ preferHdr: true }), ['2160:hlg', '2160:hdr10', '2160:sdr', '2160:dv', '1080:hdr10']);
+  assert.deepEqual(order({ preferHdr10: true }), ['2160:hdr10', '2160:sdr', '2160:hlg', '2160:dv', '1080:hdr10']);
+  assert.deepEqual(order({ preferHdr: true, preferHdr10: true }), ['2160:hdr10', '2160:hlg', '2160:sdr', '2160:dv', '1080:hdr10']);
+  // Dolby Vision counts as HDR once the channel stops avoiding it.
+  assert.deepEqual(order({ preferHdr: true, avoidDolbyVision: false }), ['2160:hlg', '2160:hdr10', '2160:dv', '2160:sdr', '1080:hdr10']);
+  // "HDRip" is a rip name, not HDR.
+  assert.equal(rankStreams([s('[RD+] T\n720p', 'Movie HDRip 720p')], { resolution: 720, options: {} })[0].hdr, null);
+});

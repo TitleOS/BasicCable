@@ -6,6 +6,7 @@ import { buildChannel, resolveWildcard, itemLabel } from './scheduler.js';
 import { findStreams, rankStreams, addonBase, clearStreams, RESOLUTIONS } from './picker.js';
 import { clearPrepared } from './prefetch.js';
 import { artFile } from './art.js';
+import { noRepeatDays, recentlyShown } from './history.js';
 import { runnerStatus, stopRunner, ffmpegCaps } from './playout.js';
 
 const A = { auth: true };
@@ -38,6 +39,10 @@ function channelInput(b, partial = false) {
     const o = b.options || {};
     out.options = {
       avoidDolbyVision: o.avoidDolbyVision !== false,
+      preferHdr: !!o.preferHdr,
+      preferHdr10: !!o.preferHdr10,
+      // Days before an episode or movie may air again on this channel (0 = no limit).
+      noRepeatDays: o.noRepeatDays === undefined || o.noRepeatDays === '' ? 3 : Math.min(60, Math.max(0, Number(o.noRepeatDays) || 0)),
       includeSpecials: !!o.includeSpecials,
       audio: o.audio === 'copy' ? 'copy' : 'aac',
       subtitles: ['auto', 'soft', 'off'].includes(o.subtitles) ? o.subtitles : 'auto',
@@ -108,13 +113,17 @@ async function applySettings(b) {
     patch.preferKeywords = (Array.isArray(b.preferKeywords) ? b.preferKeywords : String(b.preferKeywords).split(','))
       .map((k) => String(k).trim()).filter(Boolean);
   }
+  if (b.blockKeywords !== undefined) {
+    patch.blockKeywords = (Array.isArray(b.blockKeywords) ? b.blockKeywords : String(b.blockKeywords).split(','))
+      .map((k) => String(k).trim()).filter(Boolean);
+  }
   if (b.prefetchMinutes !== undefined) patch.prefetchMinutes = Math.min(60, Math.max(0, parseInt(b.prefetchMinutes, 10) || 0));
   const before = store.getSettings();
   const after = store.saveSettings(patch);
   if (patch.timezone && patch.timezone !== before.timezone) {
     for (const c of store.listChannels()) await rebuild(c.id);
   }
-  if (patch.preferKeywords || patch.streamAddons) {
+  if (patch.preferKeywords || patch.blockKeywords || patch.streamAddons) {
     // Different addons or preferences can change which file wins.
     clearStreams();
     clearPrepared();
@@ -130,7 +139,7 @@ function channelDetail(c) {
 // Backup / restore
 
 const BACKUP_VERSION = 1;
-const SETTINGS_KEYS = ['streamAddons', 'metaAddon', 'timezone', 'publicUrl', 'defaultResolution', 'oneStreamPerIp', 'preferKeywords', 'prefetchMinutes'];
+const SETTINGS_KEYS = ['streamAddons', 'metaAddon', 'timezone', 'publicUrl', 'defaultResolution', 'oneStreamPerIp', 'preferKeywords', 'blockKeywords', 'prefetchMinutes'];
 
 /**
  * Where each show is right now, so episodes continue in order on the new install. The stored cursors already
@@ -227,7 +236,8 @@ async function createChannelOp(b) {
 async function updateChannelOp(cur, b) {
   const c = store.updateChannel(cur.id, channelInput(b, true));
   const scheduleChanged = ['fill_mode', 'round_minutes'].some((k) => b[k] !== undefined && b[k] !== cur[k]) ||
-    (b.options && !!b.options.includeSpecials !== !!cur.options.includeSpecials);
+    (b.options && !!b.options.includeSpecials !== !!cur.options.includeSpecials) ||
+    noRepeatDays(c) !== noRepeatDays(cur);
   if (b.resolution !== undefined || b.options || b.fallback !== undefined) {
     clearStreams(c.id);
     clearPrepared(c.id);
@@ -299,7 +309,7 @@ async function testAddonOp(url) {
   }
   const data = await fetchJson(`${base}/stream/series/tt1442437:1:1.json`, { timeoutMs: 30000 }).catch((e) => ({ error: e.message }));
   const streams = data.streams || [];
-  const ranked = rankStreams(streams, { resolution: 1080, fallback: 'lower', options: {} }, store.getSettings().preferKeywords || []);
+  const ranked = rankStreams(streams, { resolution: 1080, fallback: 'lower', options: {} }, store.getSettings().preferKeywords || [], store.getSettings().blockKeywords || []);
   out.total = streams.length;
   out.withUrl = streams.filter((s) => s.url).length;
   out.playable = ranked.length;
@@ -455,6 +465,16 @@ export function registerApi(router) {
       })),
     }));
     send(res, 200, { serverTime: now, from, to, channels });
+  }, A);
+
+  // Recently shown on a channel, newest first (?days=7).
+  router.get('/api/channels/:id/history', (req, res, { id }) => {
+    const c = requireChannel(id);
+    const days = Math.min(90, Math.max(1, Number(new URL(req.url, 'http://x').searchParams.get('days')) || 7));
+    const items = recentlyShown(c.id, { days }).map((r) => ({
+      start: r.aired_at, end: r.ended_at, type: r.type, title: r.title, label: itemLabel(r), video_id: r.video_id, complete: !!r.complete,
+    }));
+    send(res, 200, { days, noRepeatDays: noRepeatDays(c), items });
   }, A);
 
   // Which debrid stream would the picker choose for what's on now (or a given guide item)?
