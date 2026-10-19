@@ -34,7 +34,8 @@ export function bundleName(name) {
 
 /** Uploaded file names: keep the name people recognise, minus anything unsafe for a file system. */
 export function clipFileName(name) {
-  const base = path.basename(String(name ?? '')).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
+  // Both separators, whatever this server runs on: a Windows path from a client must lose its folders on Linux too.
+  const base = String(name ?? '').split(/[\\/]/).pop().replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
   if (!base || base.startsWith('.') || !MEDIA.test(base)) throw new Error('Upload a video file (mp4, mkv, webm, mov, avi, ts, mpg…)');
   return base.slice(-120);
 }
