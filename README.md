@@ -260,3 +260,5 @@ MCP_URL=http://localhost:7000/mcp ADDON_URL=http://localhost:7099/manifest.json 
 ```
 
 Requires Node 22.13 or newer (it uses the built-in `node:sqlite`) and ffmpeg 6.1 or newer on the PATH (older versions work but take longer to tune in). Use ffmpeg 7.x if you want subtitles; see [Subtitles](#subtitles).
+
+Every push to `main` on Forgejo runs `.forgejo/workflows/docker-build-push.yml` on the Drydock runner. It runs the tests, builds the image, scans it with Trivy (a fixable CRITICAL finding blocks the push), and pushes `10.0.1.13:5000/streamtube:<short sha>` and `:latest`. To roll out a commit, redeploy the container so it pulls `:latest`.
