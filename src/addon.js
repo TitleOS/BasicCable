@@ -5,6 +5,8 @@ import { itemLabel } from './scheduler.js';
 import { getRunner, peekRunner, tuneIn, mayWatch } from './playout.js';
 import { findStreams } from './picker.js';
 import { preparedFor } from './prefetch.js';
+import { artUrl, artFile, ensureArt } from './art.js';
+import { lineup } from './labels.js';
 
 const PREFIX = 'streamtube:';
 const CATALOG_ID = 'streamtube-channels';
@@ -37,30 +39,37 @@ function nowNext(channel) {
   return { now, cur, next };
 }
 
+/**
+ * Stremio keeps catalog rows (and often channel details) for the whole app session, so the tile carries
+ * nothing that goes stale: the channel's art and its lineup. What's on now lives in the stream list, which
+ * Stremio fetches fresh every time. The details view still gets the current episode's background, which
+ * Stremio shows behind the stream list and the loading screen.
+ */
 function channelMeta(channel, req, full = false) {
-  const base = baseUrl(req);
-  const { now, cur, next } = nowNext(channel);
-  const lines = [];
-  if (cur) lines.push(`Now: ${itemLabel(cur)} (${mmss((now - cur.start) / 1000)} in)`);
-  if (next) lines.push(`Next at ${clock(next.start)}: ${itemLabel(next)}`);
-  if (!cur && !next) lines.push('Nothing scheduled yet');
+  const art = artUrl(baseUrl(req), channel);
   const meta = {
     id: PREFIX + channel.id,
     type: 'tv',
     name: `${channel.number} · ${channel.name}`,
-    poster: channel.logo || cur?.poster || `${base}/logo/${channel.id}.svg`,
-    posterShape: channel.logo ? 'square' : 'poster',
-    logo: channel.logo || undefined,
-    background: cur?.background || cur?.poster || undefined,
-    description: lines.join('\n'),
+    poster: channel.logo || art,
+    posterShape: channel.logo ? 'square' : 'landscape',
+    background: art,
+    description: lineup(channel.id),
     genres: ['StreamTube'],
     runtime: 'LIVE',
     // Without videos, Stremio needs defaultVideoId (also on catalog previews) to know which streams to load.
     behaviorHints: { defaultVideoId: PREFIX + channel.id, isLive: true },
   };
-  if (full) meta.releaseInfo = cur ? `${clock(cur.start)} – ${clock(cur.end)}` : '';
+  if (full) {
+    const cur = store.epgAt(channel.id, Date.now());
+    meta.background = cur?.background || cur?.poster || art;
+    if (channel.logo) meta.logo = channel.logo;
+    meta.releaseInfo = 'Live TV';
+  }
   return meta;
 }
+
+const NO_CACHE = { 'cache-control': 'no-cache, max-age=0' };
 
 export function registerAddon(router) {
   router.get('/manifest.json', (req, res) => {
@@ -82,7 +91,7 @@ export function registerAddon(router) {
 
   const catalog = (req, res) => {
     const metas = store.listChannels().filter((c) => c.enabled).map((c) => channelMeta(c, req));
-    send(res, 200, { metas, cacheMaxAge: 60 });
+    send(res, 200, { metas }, NO_CACHE);
   };
   router.get(`/catalog/tv/${CATALOG_ID}.json`, catalog);
   router.get(`/catalog/tv/${CATALOG_ID}/:extra.json`, catalog);
@@ -90,7 +99,7 @@ export function registerAddon(router) {
   router.get('/meta/tv/:id.json', (req, res, { id }) => {
     const channel = channelFromId(id);
     if (!channel) return send(res, 200, { meta: null });
-    send(res, 200, { meta: channelMeta(channel, req, true), cacheMaxAge: 30 });
+    send(res, 200, { meta: channelMeta(channel, req, true) }, NO_CACHE);
   });
 
   router.get('/stream/tv/:id.json', (req, res, { id }) => {
@@ -117,7 +126,7 @@ export function registerAddon(router) {
         behaviorHints: { notWebReady: true, bingeGroup: `streamtube-direct-${channel.id}` },
       });
     }
-    send(res, 200, { streams, cacheMaxAge: 0 });
+    send(res, 200, { streams }, NO_CACHE);
   });
 
   // --- live HLS
@@ -201,7 +210,7 @@ export function registerAddon(router) {
     const base = baseUrl(req);
     const lines = [`#EXTM3U x-tvg-url="${base}/epg.xml"`];
     for (const c of store.listChannels().filter((x) => x.enabled)) {
-      const logo = c.logo || `${base}/logo/${c.id}.svg`;
+      const logo = c.logo || artUrl(base, c);
       lines.push(`#EXTINF:-1 tvg-id="streamtube.${c.id}" tvg-chno="${c.number}" tvg-name="${c.name}" tvg-logo="${logo}" group-title="StreamTube",${c.name}`);
       lines.push(`${base}/live/${c.id}/index.m3u8`);
     }
@@ -215,7 +224,7 @@ export function registerAddon(router) {
     const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="StreamTube">'];
     const channels = store.listChannels().filter((c) => c.enabled);
     for (const c of channels) {
-      out.push(`  <channel id="streamtube.${c.id}"><display-name>${x(c.name)}</display-name><display-name>${c.number}</display-name><icon src="${x(c.logo || `${base}/logo/${c.id}.svg`)}"/></channel>`);
+      out.push(`  <channel id="streamtube.${c.id}"><display-name>${x(c.name)}</display-name><display-name>${c.number}</display-name><icon src="${x(c.logo || artUrl(base, c))}"/></channel>`);
     }
     const now = Date.now();
     for (const c of channels) {
@@ -234,17 +243,22 @@ export function registerAddon(router) {
     send(res, 200, out.join('\n'), { 'content-type': 'application/xml; charset=utf-8' });
   });
 
+  // Channel art (see art.js). The file name carries a version key, so it can be cached forever.
+  router.get('/art/:file', async (req, res, { file }) => {
+    const m = file.match(/^(\d+)-([0-9a-f]+)\.png$/);
+    const c = m && store.getChannel(Number(m[1]));
+    if (!c) throw new HttpError(404, 'No such channel');
+    if (file !== artFile(c)) return send(res, 302, '', { location: artUrl(baseUrl(req), c) }); // renamed since
+    const path = await ensureArt(c);
+    const stat = fs.statSync(path);
+    res.writeHead(200, { 'content-type': 'image/png', 'content-length': stat.size, 'cache-control': 'public, max-age=31536000, immutable', 'access-control-allow-origin': '*' });
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(path).pipe(res);
+  });
+  // Older playlists linked an SVG logo; send them to the art.
   router.get('/logo/:id.svg', (req, res, { id }) => {
     const c = store.getChannel(id);
     if (!c) throw new HttpError(404, 'No such channel');
-    const hue = (c.id * 67) % 360;
-    const name = c.name.replace(/[<>&]/g, '');
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450">
-<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue},55%,32%)"/><stop offset="1" stop-color="hsl(${(hue + 40) % 360},50%,14%)"/></linearGradient></defs>
-<rect width="300" height="450" fill="url(#g)"/>
-<text x="150" y="215" font-family="Helvetica,Arial,sans-serif" font-size="120" font-weight="700" fill="#fff" text-anchor="middle">${c.number}</text>
-<text x="150" y="290" font-family="Helvetica,Arial,sans-serif" font-size="30" fill="#fff" fill-opacity=".85" text-anchor="middle">${name.length > 16 ? name.slice(0, 15) + '…' : name}</text>
-</svg>`;
-    send(res, 200, svg, { 'content-type': 'image/svg+xml', 'cache-control': 'max-age=300' });
+    send(res, 302, '', { location: artUrl(baseUrl(req), c) });
   });
 }

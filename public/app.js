@@ -281,6 +281,7 @@ function channelForm(ch) {
   });
   const field = (label, el, hint) => h('label', { class: 'field' }, label, el, hint ? h('span', { class: 'hint' }, hint) : null);
   return h('div', { class: 'panel' },
+    ch?.art ? h('img', { class: 'chan-art', src: ch.art, alt: `${c.name} channel art` }) : null,
     h('h2', {}, ch ? `${c.number} · ${c.name}` : 'New channel'),
     h('div', { class: 'grid-form' },
       field('Name', f.name), field('Channel number', f.number), field('Logo', f.logo),

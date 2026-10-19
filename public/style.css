@@ -111,6 +111,7 @@ label.check { display: inline-flex; align-items: center; gap: 6px; cursor: point
 
 /* channels page */
 .split { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+.chan-art { width: 100%; max-width: 420px; aspect-ratio: 16 / 9; border-radius: 10px; margin-bottom: 14px; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 .chan-list { display: flex; flex-direction: column; gap: 6px; position: sticky; top: 76px; }
 .chan-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; text-decoration: none; color: var(--text); }
 .chan-item:hover { background: var(--panel); }

@@ -5,6 +5,7 @@ import { search, expandWildcard, fetchJson } from './metadata.js';
 import { buildChannel, resolveWildcard, itemLabel } from './scheduler.js';
 import { findStreams, rankStreams, addonBase, clearStreams, RESOLUTIONS } from './picker.js';
 import { clearPrepared } from './prefetch.js';
+import { artFile } from './art.js';
 import { runnerStatus, stopRunner, ffmpegCaps } from './playout.js';
 
 const A = { auth: true };
@@ -122,7 +123,7 @@ async function applySettings(b) {
 }
 
 function channelDetail(c) {
-  return { ...c, sources: store.listSources(c.id), slots: store.listSlots(c.id) };
+  return { ...c, art: `/art/${artFile(c)}`, sources: store.listSources(c.id), slots: store.listSlots(c.id) };
 }
 
 // ---------------------------------------------------------------------------

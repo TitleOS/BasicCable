@@ -1,8 +1,8 @@
 FROM node:24-trixie-slim
 
-# ffmpeg does the live remuxing; fonts are for the "couldn't play" slate.
+# ffmpeg does the live remuxing; the fonts are for the slates and the channel art (Bebas Neue, Montserrat).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core ca-certificates tzdata \
+ && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-bebas-neue fonts-montserrat ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

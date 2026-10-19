@@ -13,6 +13,7 @@ import { itemLabel, replaceItem } from './scheduler.js';
 import { runnerStatus, ffmpegCaps, interruptRunner, publishedEdge } from './playout.js';
 import { addonBase } from './picker.js';
 import { repairGuide } from './repair.js';
+import { daysLabel } from './labels.js';
 import { parseDays, parseClock, parseDuration, minutesBetween, parseTitleSpec, normTitle, parseResolution } from './nl.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -147,14 +148,6 @@ async function buildSlot(slot) {
     note = r.note;
   }
   return { body: { days, start, minutes, content, play_order: slot.order === 'random' ? 'random' : 'sequential' }, note };
-}
-
-function daysLabel(days) {
-  const d = String(days).split(',').map(Number).sort().join(',');
-  if (d === '1,2,3,4,5,6,7') return 'Daily';
-  if (d === '1,2,3,4,5') return 'Weekdays';
-  if (d === '6,7') return 'Weekends';
-  return d.split(',').map((n) => ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][n]).join(', ');
 }
 
 function slotLabel(s) {
