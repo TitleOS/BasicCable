@@ -293,9 +293,44 @@ const building = new Map();
 export function buildChannel(channelId, opts = {}) {
   const key = Number(channelId);
   const prev = building.get(key) || Promise.resolve();
-  const next = prev.catch(() => {}).then(() => doBuild(key, opts));
+  const next = prev.catch(() => {}).then(() => (opts.retime ? doRetime(key, opts.retime) : doBuild(key, opts)));
   building.set(key, next);
   return next.finally(() => { if (building.get(key) === next) building.delete(key); });
+}
+
+/**
+ * Make the guide follow the stream: move guide row `itemId` to start at `start` (an earlier file ran short, a
+ * break was shorter than planned, a file is longer than its slot...). Everything after it moves by the same
+ * amount and the program before it now ends at `start`; what plays, and in what order, doesn't change.
+ * Weekly time slots stay put: rows from the next slot start on don't move, and the last row before it runs on
+ * to the slot. Resolves to true when the guide moved, false when there was nothing to do, or 'conflict' when a
+ * later start would push programs into a time slot (callers then replan instead).
+ */
+export function retimeFrom(channelId, itemId, start) {
+  return buildChannel(channelId, { retime: { id: Number(itemId), start: Math.round(start) } });
+}
+
+function doRetime(channelId, { id, start }) {
+  const row = store.get('SELECT * FROM epg WHERE id = ? AND channel_id = ?', id, channelId);
+  if (!row) return false;
+  const delta = start - row.start; // negative: earlier
+  if (Math.abs(delta) < 1000) return false;
+  const prev = store.get('SELECT * FROM epg WHERE channel_id = ? AND end = ? AND start < ? ORDER BY start DESC LIMIT 1', channelId, row.start, row.start);
+  if (prev && start <= prev.start) return false; // would swallow the program before it
+  const zone = store.getSettings().timezone || config.timezone;
+  const last = store.epgLast(channelId);
+  const pin = slotOccurrences(store.listSlots(channelId), row.start + 1, (last?.end ?? row.end) + DAY, zone)
+    .map((o) => o.start).find((s) => s > row.start) ?? Infinity;
+  const moving = store.all('SELECT id, start, end FROM epg WHERE channel_id = ? AND start >= ? AND start < ? ORDER BY start', channelId, row.start, pin);
+  const lastMoving = moving[moving.length - 1];
+  if (delta > 0 && pin !== Infinity && lastMoving && lastMoving.end + delta > pin) return 'conflict';
+  store.tx(() => {
+    if (prev) store.run('UPDATE epg SET end = ? WHERE id = ?', start, prev.id);
+    store.run('UPDATE epg SET start = start + ?, end = end + ? WHERE channel_id = ? AND start >= ? AND start < ?', delta, delta, channelId, row.start, pin);
+    // Pulled away from a time slot: the program before the slot runs on to it, as the planner would have done.
+    if (delta < 0 && pin !== Infinity && lastMoving) store.run('UPDATE epg SET end = ? WHERE id = ?', pin, lastMoving.id);
+  });
+  return true;
 }
 
 /**

@@ -291,3 +291,55 @@ test('a guide restarted after an on-air cut never overlaps the cut item', async 
   assertContiguous(rows);
   assert.equal(rows[1].start, halfHour + 4 * 60e3);
 });
+
+test('the guide follows the stream: an early start moves everything after it, content unchanged', async () => {
+  const { retimeFrom } = await import('../src/scheduler.js');
+  seedSeries('tt030', 'Follow', 22, 2, 10);
+  const ch = store.createChannel({ name: 'Follow', round_minutes: 5, fill_mode: 'sequential' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt030', name: 'Follow' });
+  const now = DateTime.fromISO('2026-10-21T00:00', { zone: ZONE }).toMillis();
+  await buildChannel(ch.id, { now });
+  const before = store.epgRange(ch.id, now, Infinity);
+  const [a, b, c] = before;
+  assert.equal(b.end - b.start, 25 * 60e3);
+  // The file for "a" ended 3 minutes early: "b" really starts then.
+  assert.equal(await retimeFrom(ch.id, b.id, b.start - 3 * 60e3), true);
+  const after = store.epgRange(ch.id, now, Infinity);
+  assertContiguous(after);
+  assert.deepEqual(after.map((r) => r.video_id), before.map((r) => r.video_id), 'same programs, same order');
+  assert.equal(after[0].end, a.end - 3 * 60e3, 'the previous program now ends when it really did');
+  assert.equal(after[1].start, b.start - 3 * 60e3);
+  assert.equal(after[2].start, c.start - 3 * 60e3);
+  assert.equal(after.at(-1).end, before.at(-1).end - 3 * 60e3);
+  // Nothing to do for a start within a second, or for a row that's gone.
+  assert.equal(await retimeFrom(ch.id, after[1].id, after[1].start + 500), false);
+  assert.equal(await retimeFrom(ch.id, 999999, now), false);
+  // A later start works the same way (a longer file).
+  assert.equal(await retimeFrom(ch.id, after[2].id, after[2].start + 90e3), true);
+  const later = store.epgRange(ch.id, now, Infinity);
+  assertContiguous(later);
+  assert.equal(later[1].end - later[1].start, 25 * 60e3 + 90e3);
+});
+
+test('the guide follows the stream but weekly time slots stay where they are', async () => {
+  const { retimeFrom } = await import('../src/scheduler.js');
+  seedSeries('tt031', 'Filler', 22, 2, 10);
+  seedSeries('tt032', 'Primetime', 44, 2, 10);
+  const ch = store.createChannel({ name: 'Slotted', round_minutes: 5, fill_mode: 'sequential' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt031', name: 'Filler' });
+  store.addSlot(ch.id, { days: '1,2,3,4,5,6,7', start: '20:00', minutes: 60, content: { kind: 'series', ref: 'tt032', name: 'Primetime' } });
+  const now = DateTime.fromISO('2026-10-21T18:00', { zone: ZONE }).toMillis();
+  const eight = DateTime.fromISO('2026-10-21T20:00', { zone: ZONE }).toMillis();
+  await buildChannel(ch.id, { now });
+  const rows = store.epgRange(ch.id, now, eight + 2 * HOUR);
+  const second = rows[1];
+  assert.equal(await retimeFrom(ch.id, second.id, second.start - 4 * 60e3), true);
+  const after = store.epgRange(ch.id, now, eight + 2 * HOUR);
+  assertContiguous(after);
+  const slotRow = after.find((r) => r.meta_id === 'tt032');
+  assert.equal(slotRow.start, eight, 'the 8 PM slot still starts at 8 PM');
+  assert.equal(after[after.indexOf(slotRow) - 1].end, eight, 'the program before it runs on to 8 PM');
+  // Pushing programs later into the slot isn't done by shifting; the caller replans instead.
+  const last = after[after.indexOf(slotRow) - 1];
+  assert.equal(await retimeFrom(ch.id, last.id, last.start + 10 * 60e3), 'conflict');
+});

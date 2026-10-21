@@ -5,11 +5,12 @@ import { store } from './db.js';
 import { log } from './config.js';
 import { findStreams, forgetStream } from './picker.js';
 import { probe } from './probe.js';
-import { extendItem, replaceItem, markUnplayable, maxItemLength, itemLabel } from './scheduler.js';
+import { extendItem, replaceItem, retimeFrom, markUnplayable, maxItemLength, itemLabel } from './scheduler.js';
 import { breakAllowance } from './commercials.js';
 
 const READY_MS = 2 * 3600 * 1000; // debrid links stay valid for hours; re-check after this
 const RETRY_MS = 5 * 60 * 1000; // after finding nothing playable, wait before asking the addons again
+const FIT_TOLERANCE_MS = 5000; // guide slots within this of the real length are left alone
 
 const ready = new Map(); // `${channelId}|${video_id}` -> { at, cand, info } or { at, failed: true }
 const inflight = new Map(); // same key -> Promise while a lookup is running
@@ -80,19 +81,23 @@ export function preparedFor(item, channel) {
 async function fitGuideToFile(item, channel, info) {
   if (!info.duration || item.start <= Date.now()) return;
   const scheduled = item.end - item.start;
-  // The file plus the commercial break that follows it.
-  const actual = (info.duration + breakAllowance(channel)) * 1000;
-  if (actual <= scheduled + 60000) return;
-  if (actual > await maxItemLength(item, channel)) {
+  // The file plus the commercial break that follows it, to the second: the guide shows what will really air.
+  const actual = Math.ceil(info.duration + breakAllowance(channel)) * 1000;
+  if (Math.abs(actual - scheduled) < FIT_TOLERANCE_MS) return;
+  if (actual > scheduled && actual > await maxItemLength(item, channel)) {
     log.info(`channel ${channel.number}: ${itemLabel(item)} reports ${Math.round(actual / 60000)} min, far past its usual runtime; ` +
       'keeping its guide slot');
     return;
   }
-  const step = Math.max(1, channel.round_minutes || 1) * 60000;
-  const newEnd = item.start + Math.ceil(actual / step) * step;
-  if (await extendItem(channel.id, item.id, newEnd)) {
-    log.info(`channel ${channel.number}: ${itemLabel(item)} runs ${Math.round(actual / 60000)} min, ` +
-      `gave it ${Math.round((newEnd - item.start) / 60000)} min in the guide`);
+  if (actual < scheduled / 2) return; // a length header that can't be right; don't cut the program off
+  const newEnd = item.start + actual;
+  const next = store.epgAfter(channel.id, item.start);
+  let moved = next && next.start === item.end ? await retimeFrom(channel.id, next.id, newEnd) : false;
+  // Longer, and the shift would run into a time slot (or nothing follows yet): replan after it instead.
+  if (moved !== true && actual > scheduled) moved = await extendItem(channel.id, item.id, newEnd);
+  if (moved === true) {
+    log.info(`channel ${channel.number}: ${itemLabel(item)} runs ${(actual / 60000).toFixed(1)} min, ` +
+      `${actual > scheduled ? 'lengthened' : 'shortened'} its guide slot from ${(scheduled / 60000).toFixed(1)} min`);
   }
 }
 

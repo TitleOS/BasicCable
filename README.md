@@ -82,7 +82,12 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 
 ## Scheduling details
 
-- **Runtimes** come from Cinemeta, which gives a single per-series value such as "21 min". Real files differ by a minute or two, so each channel rounds runtimes up (5 minutes by default). If a file ends early, the next program starts early and catches back up to the guide. If a file runs long, it's cut at its scheduled end. Pick a larger rounding if you see endings get clipped. With stream prefetching on, files that run longer, such as Superfan cuts, are caught before they air and given their full length.
+- **The guide follows the stream.** A channel is planned from Cinemeta runtimes (one per-series value such as "21 min", rounded up per channel), but real files run shorter or longer than that. The guide is corrected as the real lengths become known, so it always shows what's actually on, at the minute, rather than neat :00/:30 times:
+  - About 10 minutes before a program airs, its file is prepared and its slot is set to the file's exact length (plus the commercial break, if the channel has one). Everything after it moves earlier or later to match. This happens whether or not anyone is watching.
+  - When a program ends and the next one starts at a different time than the guide says, that program and everything after it move to when it really started. A gap of a few seconds is left alone.
+  - Nothing is ever replayed: after a program, the channel only moves on to programs later in the guide.
+  - What plays, and in what order, never changes when the guide moves; only the times do. A file that's clearly broken (its length is less than half the runtime, or far more) keeps its planned slot.
+- **Time slots stay put.** Moving the guide never shifts a weekly time slot: programs before it move, and the last one runs on to the slot's start. A program that would push into a slot makes the rest of the block replan instead.
 - **Slots win.** Auto-fill items never run into a slot. Leftover time at the end of a block goes to the previous item if it's under 10 minutes. Otherwise a fitting item from the pool fills it. An episode that has to be cut short airs again next time instead of being skipped.
 - **Episode memory** is per channel and per show, and is shared between the pool and slots. Specials (season 0) and unreleased episodes are skipped.
 - **No-repeat window.** The planner skips anything that aired, or is already planned, in full within the channel's window, counting both the history and the guide ahead. In-order shows skip past such an episode; random ones pick another. The window is measured from start time to start time. A guide planned before you change the window keeps its items until you rebuild it (editing the window rebuilds that channel's guide).
@@ -123,7 +128,7 @@ Turn breaks on per channel in the channel editor's **Commercials** panel:
 
 How breaks fit the live guide:
 - **Room in the guide.** Every program gets extra time for the break that follows it. That's commercials per break times the average clip length of the chosen bundles, rounded up with the program's slot length. For example, a 24-minute episode with two 1-minute spots gets a 30-minute slot instead of 25.
-- **Between programs only.** The break plays after a program ends and stops at the next program's scheduled start. If it ends early, the next program starts a little early, as it does without commercials.
+- **Between programs only.** The break plays after a program ends and stops at the next program's scheduled start. If the clips picked come up short of the room set aside, the next program starts straight after them and the guide moves to match.
 - **Picking clips.** Clips are picked at random from the chosen bundles. Only clips that fit the time left are used, and the last dozen played on that channel are avoided.
 - **Breaks aren't guide items.** The guide, Recently shown and XMLTV only list programs. Tuning in during a break joins the break, and the next program follows.
 
@@ -175,7 +180,7 @@ Without help, opening a channel waits for every stream addon to answer, then che
 
 Opening a channel then starts ffmpeg straight away. The log line for the program says `stream was prepared ahead`. In testing with addons that took 5 seconds to answer, tune-in dropped from 6.2s to 1.0s.
 
-Preparing also reveals the file's real length. If it's more than a minute longer than its guide slot, the slot is stretched to fit (rounded up per channel), and the rest of the guide moves back. A Superfan episode in a 25-minute slot gets 30 or 35 minutes instead of being cut off. Only programs that haven't started yet are changed. If a stretched program runs into a time slot, that slot starts late by the same amount.
+Preparing also reveals the file's real length, and the program's guide slot is set to it exactly, shorter or longer. A Superfan episode gets its full extended length instead of being cut off, and a 21-minute file in a 25-minute slot gives the next program those 4 minutes. Only programs that haven't started yet are changed. See [Scheduling details](#scheduling-details).
 
 ### Episodes with nothing playable
 

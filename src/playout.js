@@ -5,7 +5,7 @@ import { config, log } from './config.js';
 import { store } from './db.js';
 import { headerArgs } from './probe.js';
 import { prepareStream, dropPrepared, skipUnplayable, preparedFor } from './prefetch.js';
-import { buildChannel, itemLabel } from './scheduler.js';
+import { buildChannel, itemLabel, retimeFrom } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
 import { perBreak, clipsFor, pickBreak, readyFile } from './commercials.js';
 
@@ -20,6 +20,8 @@ const WINDOW = 10; // segments listed in the live playlist
 const PREROLL_SECONDS = 18; // published straight away on tune-in, so players can start
 const EARLY_FAIL_SECONDS = 15; // ffmpeg dying before producing this much video means the file is the problem
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RETIME_MS = 3000; // a program starting this far off its guide time moves the guide
+const MAX_LATE_RETIME_MS = 5 * 60 * 1000; // a later start than this joins the program part-way instead
 const MIN_BREAK_GAP_MS = 10000; // a gap shorter than this before the next program isn't worth a commercial
 const recentAds = new Map(); // channel id -> clip ids played lately, newest last (outlives a channel restart)
 const BURN_PRESET = process.env.SUBTITLE_BURN_PRESET || 'veryfast';
@@ -184,13 +186,18 @@ class ChannelRunner {
     let fails = 0;
     let failItem = null;
     let breakBefore = null; // the program whose commercial break has already played
+    let following = false; // the last thing on air was a program that played to its end
     while (!this.stopped) {
       const now = this.clock();
       let item = store.epgAt(this.channelId, now);
-      if (item && lastItem && item.id === lastItem.id) item = store.epgAfter(this.channelId, lastItem.start);
+      // Never step back: after a program, only something later in the guide comes next. (The stream can be ahead
+      // of the guide; going by the clock alone once replayed the end of the previous program and then the
+      // current one again.)
+      if (item && lastItem && item.start <= lastItem.start) item = store.epgAfter(this.channelId, lastItem.start);
       if (!item) {
         buildChannel(this.channelId).catch(() => {});
         this.setStatus({ state: 'offair', item: null, stream: null, message: 'Nothing scheduled' });
+        following = false;
         await this.playSlate('Nothing scheduled on this channel', 'Add shows in the StreamTube web interface', 30);
         continue;
       }
@@ -202,9 +209,11 @@ class ChannelRunner {
         continue; // look at the guide again: it may have changed during the break
       }
       if (item.id !== failItem) { failItem = item.id; fails = 0; }
-      const result = await this.playItem(item);
+      const result = await this.playItem(item, { following });
+      following = result === 'done';
       if (this.stopped) break;
-      if (result === 'done') { lastItem = item; continue; }
+      // Re-read it: starting it may have moved it in the guide.
+      if (result === 'done') { lastItem = store.get('SELECT * FROM epg WHERE id = ?', item.id) || item; continue; }
       if (result === 'skipped') continue; // the guide now has a replacement at this spot
       fails++;
       if (result === 'retry' && fails <= 3) continue; // link dropped mid-item: resume where it stopped
@@ -216,7 +225,7 @@ class ChannelRunner {
     }
   }
 
-  async playItem(item) {
+  async playItem(item, { following = false } = {}) {
     const channel = store.getChannel(this.channelId);
     if (!channel) { this.stop(); return 'failed'; }
     this.setStatus({ state: 'resolving', item: { ...item, label: itemLabel(item) }, stream: null, message: '' });
@@ -269,6 +278,15 @@ class ChannelRunner {
       // its slot until its scheduled end.
       const resumeAt = this.resume?.itemId === item.id ? this.resume.at : null;
       const pos = this.clock(); // where the channel's timeline is: up to READ_AHEAD_SECONDS past now
+      // Straight on from the previous program, but not at its guide time: the guide follows the stream, so move
+      // this program (and everything after it) to when it really starts. Not on tune-in, which joins part-way.
+      if (attempt === 0 && following && resumeAt == null && Math.abs(item.start - pos) > RETIME_MS &&
+        (pos < item.start || pos - item.start < MAX_LATE_RETIME_MS) && (await retimeFrom(this.channelId, item.id, pos)) === true) {
+        const off = Math.round((item.start - pos) / 1000);
+        log.info(`channel ${channel.number}: ${itemLabel(item)} starts ${Math.abs(off)}s ${off > 0 ? 'early' : 'late'}; moved the guide to match`);
+        item = store.get('SELECT * FROM epg WHERE id = ?', item.id) || item;
+        this.status.item = { ...item, label: itemLabel(item) };
+      }
       const startAt = resumeAt ?? Math.max(0, (pos - item.start) / 1000);
       const limit = Math.max(5, (item.end - pos) / 1000);
       // Read ahead just enough to bring the buffer up to its target (a few seconds minimum to start quickly).
