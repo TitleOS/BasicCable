@@ -78,12 +78,14 @@ export function preparedFor(item, channel) {
  * The Office "Superfan" episodes), give the item its real length so it isn't cut off, and push the rest of
  * the guide back. Only for items that haven't started yet.
  */
-async function fitGuideToFile(item, channel, info) {
-  if (!info.duration || item.start <= Date.now()) return;
+export async function fitGuideToFile(item, channel, info, { onAir = false } = {}) {
+  if (!info.duration || (!onAir && item.start <= Date.now())) return;
   const scheduled = item.end - item.start;
   // The file plus the commercial break that follows it, to the second: the guide shows what will really air.
   const actual = Math.ceil(info.duration + breakAllowance(channel)) * 1000;
   if (Math.abs(actual - scheduled) < FIT_TOLERANCE_MS) return;
+  // On air, only make room for a longer file; a shorter one is caught when the next program starts.
+  if (onAir && actual < scheduled) return;
   if (actual > scheduled && actual > await maxItemLength(item, channel)) {
     log.info(`channel ${channel.number}: ${itemLabel(item)} reports ${Math.round(actual / 60000)} min, far past its usual runtime; ` +
       'keeping its guide slot');
@@ -94,7 +96,7 @@ async function fitGuideToFile(item, channel, info) {
   const next = store.epgAfter(channel.id, item.start);
   let moved = next && next.start === item.end ? await retimeFrom(channel.id, next.id, newEnd) : false;
   // Longer, and the shift would run into a time slot (or nothing follows yet): replan after it instead.
-  if (moved !== true && actual > scheduled) moved = await extendItem(channel.id, item.id, newEnd);
+  if (moved !== true && actual > scheduled && !onAir) moved = await extendItem(channel.id, item.id, newEnd);
   if (moved === true) {
     log.info(`channel ${channel.number}: ${itemLabel(item)} runs ${(actual / 60000).toFixed(1)} min, ` +
       `${actual > scheduled ? 'lengthened' : 'shortened'} its guide slot from ${(scheduled / 60000).toFixed(1)} min`);

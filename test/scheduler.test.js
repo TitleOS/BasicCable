@@ -161,13 +161,18 @@ test('an unplayable episode that is already on air is cut off now and replaced i
   assert.ok(isUnplayable(onAir.video_id));
 });
 
-test('maxItemLength allows extended cuts but not absurd lengths', async () => {
+test('maxItemLength allows double-length episodes and extended cuts but not whole seasons', async () => {
   const { maxItemLength } = await import('../src/scheduler.js');
   const ch = { round_minutes: 5 };
-  // Sitcom, 21 min: runtime + 20 wins -> 41 -> rounded to 45.
-  assert.equal(await maxItemLength({ type: 'series', meta_id: 'tt001' }, ch), 45 * 60e3);
-  // Drama, 44 min: runtime * 1.6 wins -> 70.4 -> rounded to 75.
-  assert.equal(await maxItemLength({ type: 'series', meta_id: 'tt002' }, ch), 75 * 60e3);
+  // Sitcom, 21 min: runtime + 90 wins -> 111 -> rounded to 115.
+  const sitcom = await maxItemLength({ type: 'series', meta_id: 'tt001' }, ch);
+  assert.equal(sitcom, 115 * 60e3);
+  assert.ok(71 * 60e3 < sitcom, 'a 71-minute premiere (The Bad Batch "Aftermath") fits');
+  assert.ok(10 * 21 * 60e3 > sitcom, 'a whole season in one file does not');
+  // Drama, 44 min: runtime + 90 -> 134 -> 135; a two-hour finale fits, an 8-episode season file doesn't.
+  const drama = await maxItemLength({ type: 'series', meta_id: 'tt002' }, ch);
+  assert.equal(drama, 135 * 60e3);
+  assert.ok(8 * 44 * 60e3 > drama);
 });
 
 test('repairGuide skips an over-stretched on-air item and replans stretched upcoming ones', async () => {
@@ -187,7 +192,7 @@ test('repairGuide skips an over-stretched on-air item and replans stretched upco
   assert.equal(store.get('SELECT end FROM epg WHERE id = ?', onAir.id).end, now, 'on-air item is cut off now');
   const rows = store.epgRange(ch.id, now, Infinity).filter((r) => r.start >= now);
   assert.ok(rows.length > 5);
-  for (const r of rows) assert.ok(r.end - r.start <= 75 * 60e3, `${r.video_id} is ${(r.end - r.start) / 60e3} min`);
+  for (const r of rows) assert.ok(r.end - r.start <= 135 * 60e3, `${r.video_id} is ${(r.end - r.start) / 60e3} min`);
   assertContiguous(rows);
   assert.deepEqual(await repairGuide(), [], 'second pass finds nothing');
 });
@@ -342,4 +347,23 @@ test('the guide follows the stream but weekly time slots stay where they are', a
   // Pushing programs later into the slot isn't done by shifting; the caller replans instead.
   const last = after[after.indexOf(slotRow) - 1];
   assert.equal(await retimeFrom(ch.id, last.id, last.start + 10 * 60e3), 'conflict');
+});
+
+test('a double-length episode already on air gets its full length instead of being cut off', async () => {
+  const { fitGuideToFile } = await import('../src/prefetch.js');
+  seedSeries('tt040', 'Bad Batch', 25, 1, 16);
+  const ch = store.createChannel({ name: 'Premiere', round_minutes: 5, fill_mode: 'sequential' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt040', name: 'Bad Batch' });
+  const start = Date.now() - 24 * 60e3; // tuned in 24 minutes into "Aftermath"
+  await buildChannel(ch.id, { now: start });
+  const [onAir, next] = store.epgRange(ch.id, start, Infinity);
+  assert.equal(onAir.end - onAir.start, 25 * 60e3);
+  await fitGuideToFile(onAir, store.getChannel(ch.id), { duration: 71 * 60 }, { onAir: true });
+  const [a, b] = store.epgRange(ch.id, start, Infinity);
+  assert.equal(a.end - a.start, 71 * 60e3, 'the whole 71 minutes');
+  assert.equal(b.video_id, next.video_id, 'the same program follows, just later');
+  assert.equal(b.start, a.end);
+  // On air, a shorter file is left for the next program's start to correct.
+  await fitGuideToFile(a, store.getChannel(ch.id), { duration: 20 * 60 }, { onAir: true });
+  assert.equal(store.get('SELECT end FROM epg WHERE id = ?', a.id).end, a.end);
 });

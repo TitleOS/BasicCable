@@ -484,10 +484,11 @@ export function startScheduler() {
 
 /** Human label like "Modern Family S01E05 · Coal Digger". */
 /**
- * The longest a guide item may be stretched to fit its file: the title's usual runtime plus 60% or 20 minutes,
- * whichever is more (enough for extended cuts such as The Office "Superfan" episodes, ~40% longer). Measured
- * from the runtime rather than the current slot, so repeated checks can't keep stretching it, and files
- * reporting absurd lengths (broken headers, whole-season files) are ignored.
+ * The longest a guide item may be stretched to fit its file: three times the title's usual runtime or the
+ * runtime plus 90 minutes, whichever is more. Cinemeta gives one runtime per series, so this has to leave room
+ * for double-length premieres and finales (The Bad Batch's 71-minute first episode in a "25 min" show) and
+ * extended cuts, while still catching what isn't one episode: whole-season files and broken length headers.
+ * Measured from the runtime rather than the current slot, so repeated checks can't keep stretching it.
  */
 export async function maxItemLength(item, channel) {
   let runtime = null;
@@ -498,7 +499,7 @@ export async function maxItemLength(item, channel) {
   }
   runtime = runtime || DEFAULT_RUNTIME[item.type] || 30;
   const step = Math.max(1, channel.round_minutes || 1);
-  return roundUp(Math.max(runtime * 1.6, runtime + 20) + breakAllowance(channel) / 60, step) * MIN;
+  return roundUp(Math.max(runtime * 3, runtime + 90) + breakAllowance(channel) / 60, step) * MIN;
 }
 
 export function itemLabel(r) {

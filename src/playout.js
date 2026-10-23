@@ -4,7 +4,7 @@ import { spawn, execFile } from 'node:child_process';
 import { config, log } from './config.js';
 import { store } from './db.js';
 import { headerArgs } from './probe.js';
-import { prepareStream, dropPrepared, skipUnplayable, preparedFor } from './prefetch.js';
+import { prepareStream, dropPrepared, skipUnplayable, preparedFor, fitGuideToFile } from './prefetch.js';
 import { buildChannel, itemLabel, retimeFrom } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
 import { perBreak, clipsFor, pickBreak, readyFile } from './commercials.js';
@@ -264,6 +264,13 @@ class ChannelRunner {
       return 'failed';
     }
     const waited = Date.now() - t0;
+
+    // Normally the prefetcher already sized this program's slot to its file. If it didn't get to (tuned in
+    // right after a restart, prefetching off), make room for a longer file now rather than cutting it off.
+    if (prep.info?.duration && prep.info.duration * 1000 > item.end - item.start) {
+      await fitGuideToFile(item, channel, prep.info, { onAir: true }).catch((e) => log.warn(`channel ${channel.number}: couldn't fit the guide: ${e.message}`));
+      item = store.get('SELECT * FROM epg WHERE id = ?', item.id) || item;
+    }
 
     // Warm up whatever comes next so the hand-over is quick.
     const next = store.epgAfter(this.channelId, item.start);
