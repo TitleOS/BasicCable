@@ -51,7 +51,8 @@ export async function search(query, types = ['series', 'movie']) {
     try {
       const data = await fetchJson(`${metaBase()}/catalog/${type}/top/search=${encodeURIComponent(q)}.json`);
       const metas = (data.metas || []).filter((m) => m.id || m.imdb_id).map((m) => slimMeta(m, type));
-      store.cacheSet(key, metas);
+      // An empty answer is sometimes just the catalog having a bad moment: ask again next time.
+      if (metas.length) store.cacheSet(key, metas);
       return metas;
     } catch (e) {
       log.warn('search failed', type, q, e.message);
@@ -61,14 +62,78 @@ export async function search(query, types = ['series', 'movie']) {
   return results.flat();
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * The catalog's raw meta for a title, or null when it has no such title of that type. Temporary failures
+ * (timeouts, 5xx: Cinemeta 504s now and then) are retried, and thrown if they persist; they never read as "no
+ * such title".
+ */
+async function fetchMeta(type, id, attempts = 3) {
+  for (let i = 1; ; i++) {
+    try {
+      const data = await fetchJson(`${metaBase()}/meta/${type}/${encodeURIComponent(id)}.json`);
+      return data.meta || null;
+    } catch (e) {
+      if (/HTTP 404\b/.test(e.message)) return null;
+      if (i >= attempts) throw e;
+      await sleep(700 * i);
+    }
+  }
+}
+
+/**
+ * Does a catalog search for `name` (of `type`) list `id`? 'yes', 'no' (it found titles by that name, none with
+ * this id), or 'unknown' (the search came back empty twice).
+ */
+async function confirmBySearch(id, name, type) {
+  const q = String(name || '').replace(/[*?]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!q) return 'unknown';
+  for (let i = 0; i < 2; i++) {
+    const results = await search(q, [type]);
+    if (results.some((r) => r.id === id)) return 'yes';
+    if (results.length) return 'no';
+  }
+  return 'unknown';
+}
+
+/**
+ * Which title an IMDb id is, and whether it's a show or a movie, trying `types` in order. Cinemeta answers a
+ * movie request for a show's id with an unrelated film filed under that id, so a movie only counts once a
+ * catalog search by its name finds that same id (or, when search finds nothing, if the caller said it's a movie:
+ * `explicit`). Shows come from a clean endpoint and count when they have episodes or search confirms them.
+ * Resolves to { type, meta }; throws a readable error otherwise.
+ */
+export async function lookupImdb(id, { types = ['series', 'movie'], explicit = false } = {}) {
+  const problems = [];
+  for (const type of types) {
+    let raw;
+    try {
+      raw = await fetchMeta(type, id);
+    } catch (e) {
+      problems.push(`the catalog didn't answer for ${type === 'series' ? 'shows' : 'movies'} (${e.message.replace(/ for https?:.*/, '')})`);
+      continue;
+    }
+    if (!raw?.name) continue;
+    const confirmed = await confirmBySearch(id, raw.name, type);
+    const ok = type === 'series'
+      ? confirmed === 'yes' || (raw.videos || []).length > 0
+      : confirmed === 'yes' || (confirmed === 'unknown' && explicit);
+    if (ok) return { type, meta: await getMeta(type, id) };
+    problems.push(type === 'movie' && confirmed === 'no'
+      ? `the movie catalog files "${raw.name}" under it, but that film's real id is different`
+      : `couldn't confirm it's the ${type === 'series' ? 'show' : 'movie'} "${raw.name}"${type === 'movie' ? ' (add "movie:" in front if you\'re sure)' : ''}`);
+  }
+  throw new Error(`No show or movie with IMDb id ${id}${problems.length ? `: ${problems.join('; ')}` : ''}.`);
+}
+
 /** Full meta for a title, cached for a day. */
 export async function getMeta(type, id) {
   const key = `meta:${type}:${id}`;
   const cached = store.cacheGet(key, DAY);
   if (cached) return cached;
-  const data = await fetchJson(`${metaBase()}/meta/${type}/${encodeURIComponent(id)}.json`);
-  if (!data.meta) throw new Error(`No metadata for ${type} ${id}`);
-  const m = data.meta;
+  const m = await fetchMeta(type, id);
+  if (!m) throw new Error(`No metadata for ${type} ${id}`);
   const meta = {
     ...slimMeta(m, type),
     description: m.description || '',

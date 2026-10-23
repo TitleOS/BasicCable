@@ -8,7 +8,7 @@ import * as z from 'zod/v4';
 import { store } from './db.js';
 import { config, log } from './config.js';
 import { ops } from './api.js';
-import { search, getMeta, expandWildcard } from './metadata.js';
+import { search, expandWildcard, lookupImdb } from './metadata.js';
 import { itemLabel, replaceItem } from './scheduler.js';
 import { runnerStatus, ffmpegCaps, interruptRunner, publishedEdge } from './playout.js';
 import { addonBase } from './picker.js';
@@ -89,13 +89,13 @@ async function resolveTitle(input, { defaultTypes = null } = {}) {
     };
   }
   if (t.imdb) {
-    for (const type of t.types || ['series', 'movie']) {
-      try {
-        const m = await getMeta(type, t.imdb);
-        return { spec: { kind: type, ref: t.imdb, name: m.name, poster: m.poster }, note: `${m.name} (${type}, ${t.imdb})`, alternatives: [] };
-      } catch { /* try the other type */ }
-    }
-    throw new Error(`No show or movie with IMDb id ${t.imdb}.`);
+    // Checked against the catalog's search, so a show's id can't come back as some unrelated film.
+    const { type, meta: m } = await lookupImdb(t.imdb, { types: t.types || ['series', 'movie'], explicit: !!t.types });
+    return {
+      spec: { kind: type, ref: t.imdb, name: m.name, poster: m.poster },
+      note: `${m.name} (${type === 'series' ? 'show' : 'movie'}${m.releaseInfo ? `, ${m.releaseInfo}` : ''}, ${t.imdb})`,
+      alternatives: [],
+    };
   }
   const types = t.types || defaultTypes || ['series', 'movie'];
   // Search by the plain name: a literal * or ? in a title ("Thunderbolts*") only confuses the catalog search.
