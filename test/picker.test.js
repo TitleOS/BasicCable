@@ -118,3 +118,50 @@ test('HDR preferences reorder releases of the same resolution only', () => {
   // "HDRip" is a rip name, not HDR.
   assert.equal(rankStreams([s('[RD+] T\n720p', 'Movie HDRip 720p')], { resolution: 720, options: {} })[0].hdr, null);
 });
+
+test('an addon answering with only a notice counts as failed, and a partial outage is never "unplayable"', async () => {
+  const http = await import('node:http');
+  const { store } = await import('../src/db.js');
+  const { findStreams, isNoticeOnly } = await import('../src/picker.js');
+  assert.equal(isNoticeOnly([{ name: '[TB] Torrentio', title: '⚠️ Rate limit exceeded, try again later' }]), true);
+  assert.equal(isNoticeOnly([{ name: '[TB] Torrentio', title: 'Too many requests', url: 'https://x/notice.mp4' }]), true);
+  assert.equal(isNoticeOnly([{ name: '[TB+] Torrentio\n1080p', title: 'Obscure.Movie.1080p.mkv', url: 'https://x/a.mkv' }]), false);
+  assert.equal(isNoticeOnly([]), false);
+
+  let torrentio = 'notice';
+  let comet = 'empty';
+  const hits = { t: 0, c: 0 };
+  const server = http.createServer((req, res) => {
+    const isT = req.url.startsWith('/t/');
+    hits[isT ? 't' : 'c']++;
+    const mode = isT ? torrentio : comet;
+    const streams = mode === 'notice' ? [{ name: '[TB] Torrentio', title: '⚠️ Rate limit exceeded' }]
+      : mode === 'good' ? [{ name: '[TB+] X\n2160p', title: 'Movie.2160p.HDR.mkv', url: 'https://cdn.example/a.mkv' }] : [];
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ streams }));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  store.saveSettings({ streamAddons: [`${base}/t/manifest.json`, `${base}/c/manifest.json`] });
+  const channel = { id: 901, resolution: 2160, options: {} };
+  const item = { type: 'movie', video_id: 'tt3748528' };
+  try {
+    // Torrentio rate-limited, Comet has nothing: an outage to retry, not a title to skip.
+    await assert.rejects(() => findStreams(item, channel), /addons? failed .*trying again later/);
+    // Comet has something: use it, but don't keep this partial answer for hours.
+    comet = 'good';
+    assert.equal((await findStreams(item, channel)).length, 1);
+    const before = hits.t;
+    await findStreams(item, channel);
+    assert.equal(hits.t, before + 1, 'asked the addons again: the partial answer was not cached');
+    // Both healthy: cached as usual.
+    torrentio = 'good';
+    await findStreams(item, channel);
+    const after = hits.t;
+    await findStreams(item, channel);
+    assert.equal(hits.t, after, 'a full answer is cached');
+  } finally {
+    server.close();
+    store.saveSettings({ streamAddons: [] });
+  }
+});

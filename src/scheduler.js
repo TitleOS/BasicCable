@@ -130,6 +130,11 @@ class Planner {
     this.rows = [];
   }
 
+  /** Skipped for now as unplayable, unless everything is (then the guide still gets filled; see pickFrom). */
+  blocked(videoId) {
+    return !this.allowUnplayable && isUnplayable(videoId);
+  }
+
   /** True if this video aired (or is planned) within the channel's no-repeat window of `at`. */
   isRepeat(videoId, at) {
     if (!this.noRepeatMs) return false;
@@ -156,7 +161,7 @@ class Planner {
     const eps = entry.episodes;
     let ok;
     if (order === 'random') {
-      ok = eps.filter((e) => !isUnplayable(e.id));
+      ok = eps.filter((e) => !this.blocked(e.id));
       const fresh = ok.filter((e) => !this.isRepeat(e.id, at));
       if (fresh.length) return { ep: fresh[Math.floor(Math.random() * fresh.length)], repeat: false };
     } else {
@@ -165,7 +170,7 @@ class Planner {
       ok = [];
       for (let i = 1; i <= eps.length; i++) {
         const ep = eps[(idx + i) % eps.length];
-        if (isUnplayable(ep.id)) continue;
+        if (this.blocked(ep.id)) continue;
         if (!this.isRepeat(ep.id, at)) return { ep, repeat: false };
         ok.push(ep);
       }
@@ -181,7 +186,7 @@ class Planner {
       const next = this.nextEpisode(entry, order, at);
       return next ? { entry, video: next.ep, duration: this.durationOf(entry), repeat: next.repeat, lastShown: this.shown.get(next.ep.id) ?? 0 } : null;
     }
-    if (isUnplayable(entry.id)) return null;
+    if (this.blocked(entry.id)) return null;
     return { entry, video: null, duration: this.durationOf(entry), repeat: this.isRepeat(entry.id, at), lastShown: this.shown.get(entry.id) ?? 0 };
   }
 
@@ -212,6 +217,13 @@ class Planner {
     }
     const order = mode === 'random' ? 'random' : 'sequential';
     let cands = ordered.map((e) => this.candidate(e, order, at)).filter(Boolean);
+    if (!cands.length) {
+      // Everything failed recently (usually an addon outage): schedule anyway rather than leave the channel
+      // with nothing on. The runner keeps retrying, and plays it once streams come back.
+      this.allowUnplayable = true;
+      cands = ordered.map((e) => this.candidate(e, order, at)).filter(Boolean);
+      this.allowUnplayable = false;
+    }
     if (!cands.length) return null;
     // Repeats only when everything is one, and then whatever was shown longest ago.
     const fresh = cands.filter((c) => !c.repeat);

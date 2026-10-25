@@ -192,7 +192,14 @@ Sometimes no addon has a usable copy: every result is uncached, torrent-only or 
 
 An upcoming program is swapped before it airs. One already on air is cut off and the replacement starts straight away. The replacement is checked immediately too, so a run of missing episodes is skipped in one go. Tuning in does the same, even with prefetching off, so you get the next playable episode instead of a "couldn't play" screen.
 
-A skipped episode isn't scheduled again for 6 hours, after which it gets another chance, since debrid caches change. If no addon answers at all (an outage rather than a missing episode), nothing is skipped and StreamTube retries later.
+A skipped episode isn't scheduled again for 6 hours, after which it gets another chance, since debrid caches change.
+
+Outages aren't mistaken for missing episodes. StreamTube skips nothing and retries later in these cases:
+- **No addon answers at all.**
+- **An addon fails and the others have nothing usable.** "Fails" includes answering with only a notice, such as Torrentio's rate-limit message in place of real streams.
+- **Everything on the channel failed recently.** The channel keeps its guide and keeps retrying instead of skipping through its whole lineup, so it never ends up with nothing on.
+
+Only a program that hasn't started yet is checked ahead of time. One already on air is never re-checked and cut off by the prefetcher.
 
 Lookups are spaced 3–30 seconds apart at random, so a batch of channels never hits your addons all at once and trips their rate limits. Tuning in never waits for this spacing. If a program isn't prepared yet, opening it looks it up immediately.
 

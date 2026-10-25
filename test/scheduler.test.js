@@ -367,3 +367,17 @@ test('a double-length episode already on air gets its full length instead of bei
   await fitGuideToFile(a, store.getChannel(ch.id), { duration: 20 * 60 }, { onAir: true });
   assert.equal(store.get('SELECT end FROM epg WHERE id = ?', a.id).end, a.end);
 });
+
+test('a channel whose titles all failed recently still gets a guide instead of "nothing on"', async () => {
+  seedSeries('tt050', 'Outage A', 30, 1, 3);
+  seedSeries('tt051', 'Outage B', 30, 1, 3);
+  const ch = store.createChannel({ name: 'Outage', round_minutes: 5 });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt050', name: 'Outage A' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt051', name: 'Outage B' });
+  for (const s of ['tt050', 'tt051']) for (let e = 1; e <= 3; e++) markUnplayable(`${s}:1:${e}`);
+  const now = DateTime.fromISO('2026-10-25T05:00', { zone: ZONE }).toMillis();
+  await buildChannel(ch.id, { now });
+  const rows = store.epgRange(ch.id, now, now + 6 * HOUR);
+  assert.ok(rows.length >= 10, `guide has ${rows.length} rows`);
+  assertContiguous(rows);
+});

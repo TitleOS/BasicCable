@@ -5,7 +5,7 @@ import { store } from './db.js';
 import { log } from './config.js';
 import { findStreams, forgetStream } from './picker.js';
 import { probe } from './probe.js';
-import { extendItem, replaceItem, retimeFrom, markUnplayable, maxItemLength, itemLabel } from './scheduler.js';
+import { extendItem, replaceItem, retimeFrom, markUnplayable, isUnplayable, maxItemLength, itemLabel } from './scheduler.js';
 import { breakAllowance } from './commercials.js';
 
 const READY_MS = 2 * 3600 * 1000; // debrid links stay valid for hours; re-check after this
@@ -124,6 +124,12 @@ export async function skipUnplayable(item, channel, { at = Date.now() } = {}) {
     : store.epgAt(channel.id, now);
   log.info(`channel ${channel.number}: no playable stream for ${itemLabel(item)}, ` +
     (replacement ? `${item.start > now ? 'scheduled' : 'switched to'} ${itemLabel(replacement)} instead` : 'and nothing else to put in its place'));
+  // The replacement failed recently too: everything on this channel has. Stop here instead of skipping through
+  // the whole lineup; the guide stays filled and the next attempt tries again.
+  if (replacement && isUnplayable(replacement.video_id)) {
+    log.warn(`channel ${channel.number}: every title has failed recently; keeping the guide and retrying rather than skipping on`);
+    return null;
+  }
   return replacement;
 }
 
@@ -138,7 +144,9 @@ async function tick() {
     if (lead <= 0) return;
     const now = Date.now();
     for (const channel of store.listChannels().filter((c) => c.enabled)) {
-      const items = store.all('SELECT * FROM epg WHERE channel_id = ? AND end > ? AND start <= ? ORDER BY start', channel.id, now, now + lead);
+      // Upcoming programs only. What's on air is the runner's business: re-checking it here once cut a movie off
+      // mid-broadcast when its prepared stream expired and the re-check hit an addon hiccup.
+      const items = store.all('SELECT * FROM epg WHERE channel_id = ? AND start > ? AND start <= ? ORDER BY start', channel.id, now, now + lead);
       for (const listed of items) {
         // Follow replacements: when an item has nothing playable, check what took its place right away
         // (after the usual spacing), so a run of bad episodes is skipped in one pass.

@@ -126,10 +126,20 @@ export function rankStreams(streams, channel, prefer = [], block = []) {
   return out;
 }
 
+// Addons report trouble (rate limits, debrid errors) as a lone "stream" with no link, just a message.
+const NOTICE = /\b(error|rate.?limit\w*|too many requests|limit (?:reached|exceeded)|unavailable|invalid|expired|failed|try again|blocked)\b|⚠️|❌|🚫/i;
+
+/** True when an addon's answer is only a notice: one or two entries, none of them a usable link. */
+export function isNoticeOnly(streams) {
+  return streams.length > 0 && streams.length <= 2 && streams.every((s) => !s.url || NOTICE.test(streamText(s)));
+}
+
 async function fetchStreams(addonUrl, type, id) {
   const base = addonBase(addonUrl);
   const data = await fetchJson(`${base}/stream/${type}/${encodeURIComponent(id)}.json`, { timeoutMs: 25000 });
-  return (data.streams || []).map((s) => ({ ...s, _addon: base.replace(/^(https?:\/\/[^/]+).*/, '$1') }));
+  const streams = data.streams || [];
+  if (isNoticeOnly(streams)) throw new Error(`answered with a notice: ${streamText(streams[0]).replace(/\s+/g, ' ').slice(0, 120)}`);
+  return streams.map((s) => ({ ...s, _addon: base.replace(/^(https?:\/\/[^/]+).*/, '$1') }));
 }
 
 const cache = new Map(); // `${channelId}|${video_id}` -> { at, candidates }
@@ -156,9 +166,16 @@ export async function findStreams(item, channel, { fresh = false } = {}) {
   });
   const settings = store.getSettings();
   const candidates = rankStreams(streams, channel, settings.preferKeywords || [], settings.blockKeywords || []);
+  const failed = results.filter((r) => r.status === 'rejected').length;
   log.info(`streams for ${item.video_id}: ${streams.length} found, ${candidates.length} playable` +
-    (candidates[0] ? `, best ${candidates[0].resolution || '?'}p` : ''));
-  cache.set(key, { at: Date.now(), candidates });
+    (candidates[0] ? `, best ${candidates[0].resolution || '?'}p` : '') + (failed ? ` (${failed} addon${failed > 1 ? 's' : ''} failed)` : ''));
+  // An addon down and nothing usable from the rest is an outage, not "this title can't be played": retry later
+  // rather than skip it. (One rate-limited addon once got a whole 4K movie channel marked unplayable.)
+  if (failed && !candidates.length) {
+    throw new Error(`${failed} of ${addons.length} stream addons failed for ${item.video_id} and the rest had nothing playable; trying again later`);
+  }
+  // A partial answer isn't kept for long: the addon that failed may have had the best release.
+  if (!failed) cache.set(key, { at: Date.now(), candidates });
   return candidates;
 }
 
