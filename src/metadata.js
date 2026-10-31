@@ -128,6 +128,11 @@ export async function lookupImdb(id, { types = ['series', 'movie'], explicit = f
 }
 
 /** Full meta for a title, cached for a day. */
+/** Metadata fetched before (no network): null for a title we haven't looked up. */
+export function cachedMeta(type, id) {
+  return store.cacheGet(`meta:${type}:${id}`, 30 * DAY);
+}
+
 export async function getMeta(type, id) {
   const key = `meta:${type}:${id}`;
   const cached = store.cacheGet(key, DAY);

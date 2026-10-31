@@ -19,6 +19,10 @@ const SEGMENT_SECONDS = 6;
 const WINDOW = 10; // segments listed in the live playlist
 const PREROLL_SECONDS = 18; // published straight away on tune-in, so players can start
 const EARLY_FAIL_SECONDS = 15; // ffmpeg dying before producing this much video means the file is the problem
+// A copied (not re-encoded) video can only be cut at its keyframes. Most files have one every 10s or less; some
+// rips go 30s+ without one, and segments that long make players stall. Past this, the video gets re-encoded.
+const LONG_SEGMENT_SECONDS = 12;
+const longGop = new Map(); // stream url -> when it was found to need re-encoding (so a resume re-encodes too)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RETIME_MS = 3000; // a program starting this far off its guide time moves the guide
 const MAX_LATE_RETIME_MS = 5 * 60 * 1000; // a later start than this joins the program part-way instead
@@ -81,7 +85,7 @@ function pickAudio(audio, lang) {
 // ---------------------------------------------------------------------------
 // Channel runner: one ffmpeg chain per channel, shared by every viewer
 
-class ChannelRunner {
+export class ChannelRunner {
   constructor(channelId) {
     this.channelId = Number(channelId);
     this.dir = path.join(config.hlsDir, `ch${this.channelId}-${Date.now().toString(36)}`);
@@ -280,6 +284,7 @@ class ChannelRunner {
     for (let attempt = 0; prep && attempt < 6; attempt++) {
       if (this.stopped) return 'done';
       const { cand, info } = prep;
+      if (longGop.has(cand.url)) transcode = true;
       // Normally the live position. After a mid-program drop, where it stopped (nothing gets skipped; the end is
       // trimmed instead). An item that starts early (the previous file ran short) plays from 0 and may run past
       // its slot until its scheduled end.
@@ -320,8 +325,21 @@ class ChannelRunner {
         this.skipRequested = false;
         return 'skipped';
       }
-      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs, { transcode, burst }), { vtt: subs?.delivery === 'vtt' });
+      // (HDR video stays copied: re-encoding it here would flatten its colours.)
+      const copying = !transcode && subs?.delivery !== 'burn' && !/smpte2084|arib-std-b67/.test(info.video?.color_transfer || '');
+      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs, { transcode, burst }),
+        { vtt: subs?.delivery === 'vtt', maxSegment: copying ? LONG_SEGMENT_SECONDS : 0 });
       if (this.stopped) return 'done';
+      if (produced.longSegment && !this.skipRequested) {
+        // Keyframes too far apart to copy: carry on from the start of the long segment (it was thrown away
+        // before anyone saw it) with the video re-encoded to a keyframe every 2s.
+        longGop.set(cand.url, Date.now());
+        if (longGop.size > 200) longGop.delete(longGop.keys().next().value);
+        this.resume = { itemId: item.id, at: startAt + produced.seconds };
+        transcode = true;
+        log.info(`channel ${channel.number}: ${itemLabel(item)} has keyframes ${Math.round(produced.longSegment)}s apart; re-encoding the video from ${Math.round(startAt + produced.seconds)}s`);
+        continue;
+      }
       if (this.skipRequested) {
         // Someone skipped this program; the guide already has its replacement.
         this.skipRequested = false;
@@ -450,7 +468,7 @@ class ChannelRunner {
   }
 
   /** Runs one ffmpeg program into its own HLS playlist and folds its segments into the channel playlist. */
-  runFfmpeg(inputArgs, { vtt = false } = {}) {
+  runFfmpeg(inputArgs, { vtt = false, maxSegment = 0 } = {}) {
     const n = ++this.program;
     // The trailing "_" matters: ffmpeg names WebVTT segments "<playlist name><index>.vtt", i.e. p3_0.vtt.
     const playlist = path.join(this.dir, `p${n}_.m3u8`);
@@ -466,9 +484,11 @@ class ChannelRunner {
       let seen = 0;
       let seconds = 0;
       let firstOfProgram = true;
+      let longSegment = 0; // length of a segment over maxSegment; ffmpeg is stopped there
+      let longIndex = 0;
       proc.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
       const ingest = () => {
-        if (this.cancelled.has(n)) return;
+        if (this.cancelled.has(n) || longSegment) return;
         let text;
         try { text = fs.readFileSync(playlist, 'utf8'); } catch { return; }
         const lines = text.split(/\r?\n/);
@@ -479,6 +499,14 @@ class ChannelRunner {
         }
         for (const seg of found.slice(seen)) {
           const index = Number(seg.name.match(/_(\d+)\.ts$/)?.[1] ?? 0);
+          if (maxSegment && seg.duration > maxSegment) {
+            // Never published (and never stretches the playlist's target duration): the caller re-encodes from
+            // here, and this segment and anything after it is deleted once ffmpeg has stopped.
+            longSegment = seg.duration;
+            longIndex = index;
+            proc.kill('SIGKILL');
+            break;
+          }
           this.segments.push({ ...seg, program: n, index, seq: this.nextSeq++, disc: firstOfProgram && this.segments.length > 0, contentStart: this.contentTotal });
           this.contentTotal += seg.duration;
           seconds += seg.duration;
@@ -506,8 +534,15 @@ class ChannelRunner {
         clearInterval(poll);
         ingest();
         if (this.proc === proc) this.proc = null;
-        if (code !== 0 && !this.stopped) log.warn(`ffmpeg exited ${code} on channel ${this.channelId}: ${stderr.trim().split('\n').slice(-3).join(' | ')}`);
-        resolve({ code, segments: seen, seconds });
+        if (longSegment) {
+          for (const f of fs.readdirSync(this.dir)) {
+            const m = f.match(new RegExp(`^p${n}_(\\d+)\\.(?:ts|vtt)$`));
+            if (m && Number(m[1]) >= longIndex) fs.rm(path.join(this.dir, f), { force: true }, () => {});
+          }
+        } else if (code !== 0 && !this.stopped) {
+          log.warn(`ffmpeg exited ${code} on channel ${this.channelId}: ${stderr.trim().split('\n').slice(-3).join(' | ')}`);
+        }
+        resolve({ code, segments: seen, seconds, longSegment });
       });
     });
   }

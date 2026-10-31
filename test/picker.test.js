@@ -165,3 +165,33 @@ test('an addon answering with only a notice counts as failed, and a partial outa
     store.saveSettings({ streamAddons: [] });
   }
 });
+
+test('findStreams drops releases that name another title the server plays', async () => {
+  const http = await import('node:http');
+  const { store } = await import('../src/db.js');
+  const { findStreams } = await import('../src/picker.js');
+  const ch = store.createChannel({ name: 'HoloNet test' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt0361243', name: 'Star Wars: Clone Wars' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt0458290', name: 'Star Wars: The Clone Wars' });
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ streams: [
+      { name: '[TB⚡] Comet 1080p', description: '📄 Star.Wars.The.Clone.Wars.S01E05.Rookies.1080p.WEB-DL.mkv', url: 'https://cdn.example/tcw.mkv',
+        behaviorHints: { filename: 'Star.Wars.The.Clone.Wars.S01E05.Rookies.1080p.WEB-DL.mkv' } },
+      { name: '[TB+] Torrentio\n1080p', title: 'Star.Wars.Clone.Wars.2003.1080p\nStar Wars Clone Wars (2003) 1080p - Episode 5.mkv', url: 'https://cdn.example/cw.mkv',
+        behaviorHints: { filename: 'Star Wars Clone Wars (2003) 1080p - Episode 5.mkv' } },
+    ] }));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  store.saveSettings({ streamAddons: [`http://127.0.0.1:${server.address().port}/manifest.json`] });
+  try {
+    const cw = await findStreams({ type: 'series', meta_id: 'tt0361243', video_id: 'tt0361243:1:5', title: 'Star Wars: Clone Wars' }, { id: 902, resolution: 1080, options: {} });
+    assert.deepEqual(cw.map((c) => c.url), ['https://cdn.example/cw.mkv']);
+    const tcw = await findStreams({ type: 'series', meta_id: 'tt0458290', video_id: 'tt0458290:1:5', title: 'Star Wars: The Clone Wars' }, { id: 902, resolution: 1080, options: {} });
+    assert.deepEqual(tcw.map((c) => c.url), ['https://cdn.example/tcw.mkv']);
+  } finally {
+    server.close();
+    store.saveSettings({ streamAddons: [] });
+    store.deleteChannel(ch.id);
+  }
+});

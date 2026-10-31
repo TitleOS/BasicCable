@@ -1,6 +1,7 @@
 import { store } from './db.js';
 import { log } from './config.js';
-import { fetchJson } from './metadata.js';
+import { fetchJson, cachedMeta } from './metadata.js';
+import { normalizeTitle, namesOtherTitle, yearRange } from './titlematch.js';
 
 export const RESOLUTIONS = [2160, 1440, 1080, 720, 576, 480];
 
@@ -142,6 +143,34 @@ async function fetchStreams(addonUrl, type, id) {
   return streams.map((s) => ({ ...s, _addon: base.replace(/^(https?:\/\/[^/]+).*/, '$1') }));
 }
 
+// Every title the server plays, by normalized name, so a release naming a different one can be spotted.
+let known = null;
+const KNOWN_MS = 10 * 60 * 1000;
+
+function knownTitles() {
+  if (known && Date.now() - known.at < KNOWN_MS) return known.map;
+  const map = new Map();
+  const rows = store.all(`SELECT meta_id AS id, title FROM epg GROUP BY meta_id
+    UNION SELECT meta_id, title FROM history GROUP BY meta_id
+    UNION SELECT ref, name FROM sources WHERE kind IN ('series', 'movie')`);
+  for (const r of rows) {
+    const name = normalizeTitle(r.title || '');
+    if (!name) continue;
+    if (!map.has(name)) map.set(name, new Set());
+    map.get(name).add(r.id);
+  }
+  known = { at: Date.now(), map };
+  return map;
+}
+
+/** Names and years of the title a guide item belongs to (metadata from cache only; no lookups here). */
+function ownTitle(item) {
+  const id = item.meta_id || String(item.video_id).split(':')[0];
+  const meta = cachedMeta(item.type, id);
+  const names = [...new Set([item.title, meta?.name].filter(Boolean).map(normalizeTitle).filter(Boolean))];
+  return { id, names, years: yearRange(meta?.releaseInfo) };
+}
+
 const cache = new Map(); // `${channelId}|${video_id}` -> { at, candidates }
 const CACHE_MS = 2 * 3600 * 1000;
 
@@ -164,10 +193,20 @@ export async function findStreams(item, channel, { fresh = false } = {}) {
     if (r.status === 'fulfilled') streams.push(...r.value);
     else log.warn(`stream addon #${i + 1} failed for ${item.video_id}: ${r.reason?.message}`);
   });
+  // Addons sometimes answer with a sibling title's files (The Clone Wars for the 2003 Clone Wars).
+  let otherTitle = 0;
+  if (item.title) {
+    const own = ownTitle(item);
+    const titles = knownTitles();
+    for (let i = streams.length - 1; i >= 0; i--) {
+      if (namesOtherTitle(streams[i], own, titles)) { streams.splice(i, 1); otherTitle++; }
+    }
+  }
   const settings = store.getSettings();
   const candidates = rankStreams(streams, channel, settings.preferKeywords || [], settings.blockKeywords || []);
   const failed = results.filter((r) => r.status === 'rejected').length;
-  log.info(`streams for ${item.video_id}: ${streams.length} found, ${candidates.length} playable` +
+  log.info(`streams for ${item.video_id}: ${streams.length + otherTitle} found, ${candidates.length} playable` +
+    (otherTitle ? `, ${otherTitle} for another title` : '') +
     (candidates[0] ? `, best ${candidates[0].resolution || '?'}p` : '') + (failed ? ` (${failed} addon${failed > 1 ? 's' : ''} failed)` : ''));
   // An addon down and nothing usable from the rest is an outage, not "this title can't be played": retry later
   // rather than skip it. (One rate-limited addon once got a whole 4K movie channel marked unplayable.)
