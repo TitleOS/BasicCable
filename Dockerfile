@@ -1,7 +1,10 @@
 FROM node:24-trixie-slim
 
 # ffmpeg does the live remuxing; the fonts are for the slates and the channel art (Bebas Neue, Montserrat).
+# Debian's security updates go in at build time, so a fix released after the base image was published (which
+# the Trivy step in CI would otherwise block on) is picked up without waiting for a new node image.
 RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-bebas-neue fonts-montserrat ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
