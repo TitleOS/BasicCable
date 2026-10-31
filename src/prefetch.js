@@ -5,8 +5,9 @@ import { store } from './db.js';
 import { log } from './config.js';
 import { findStreams, forgetStream } from './picker.js';
 import { probe } from './probe.js';
-import { extendItem, replaceItem, retimeFrom, markUnplayable, isUnplayable, maxItemLength, itemLabel } from './scheduler.js';
+import { extendItem, replaceItem, retimeFrom, markUnplayable, isUnplayable, maxItemLength, itemLabel, contentMinutes } from './scheduler.js';
 import { breakAllowance } from './commercials.js';
+import { lastAiredBefore, noRepeatDays } from './history.js';
 
 const READY_MS = 2 * 3600 * 1000; // debrid links stay valid for hours; re-check after this
 const RETRY_MS = 5 * 60 * 1000; // after finding nothing playable, wait before asking the addons again
@@ -111,6 +112,45 @@ export const staggerDelay = (rand = Math.random()) => Math.round(STAGGER_MIN_MS 
 let nextLookupAt = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const DAY = 24 * 3600 * 1000;
+const repeatChecked = new Map(); // `${channel}|${video}|${start}` -> when checked
+const lineupLength = new Map(); // channel id -> { at, minutes }
+
+/** A channel's total program time, remembered for an hour. */
+async function lineupMinutes(channelId) {
+  const hit = lineupLength.get(channelId);
+  if (hit && Date.now() - hit.at < 3600e3) return hit.minutes;
+  const minutes = await contentMinutes(channelId).catch(() => Infinity);
+  lineupLength.set(channelId, { at: Date.now(), minutes });
+  return minutes;
+}
+
+/**
+ * The guide is planned up to two days ahead and then moves as programs turn out shorter than planned, so an
+ * episode that was outside the channel's no-repeat window when planned can drift inside it. Just before it
+ * airs, check again at its real time; if it would now be a rerun, put something else in its place by the
+ * channel's usual rules. Returns the replacement, or null when nothing changed. (When everything is a rerun,
+ * the planner may put the same program back; each program and time is only checked once.)
+ */
+export async function avoidRepeat(item, channel) {
+  const window = noRepeatDays(channel) * DAY;
+  if (!window) return null;
+  const key = `${channel.id}|${item.video_id}|${item.start}`;
+  if (repeatChecked.has(key)) return null;
+  repeatChecked.set(key, Date.now());
+  if (repeatChecked.size > 5000) for (const [k, t] of repeatChecked) if (t < Date.now() - DAY) repeatChecked.delete(k);
+  const last = lastAiredBefore(channel.id, item.video_id, item.start, window, item.id);
+  if (last == null) return null;
+  // A lineup shorter than the window reruns by design (oldest first); swapping would only reshuffle it.
+  if ((await lineupMinutes(channel.id)) * 60000 < window) return null;
+  if (!(await replaceItem(channel.id, item.id))) return null;
+  const replacement = store.get('SELECT * FROM epg WHERE channel_id = ? AND start = ?', channel.id, item.start);
+  if (replacement?.video_id === item.video_id) return null; // nothing fresher to play: everything is a rerun
+  log.info(`channel ${channel.number}: ${itemLabel(item)} aired ${((item.start - last) / 3600000).toFixed(1)}h earlier, inside the ` +
+    `${window / DAY}-day no-repeat window; ${replacement ? `scheduled ${itemLabel(replacement)} instead` : 'nothing to put in its place'}`);
+  return replacement;
+}
+
 /**
  * No addon has a playable stream for this item: put something else in its place, picked by the channel's
  * usual rules (next episode in order, a random one, another title...). Returns the replacement or null.
@@ -158,6 +198,9 @@ async function tick() {
           // While we waited, a viewer may have prepared it, or the guide may have been replanned.
           const item = store.get('SELECT * FROM epg WHERE id = ?', id);
           if (!item || item.end <= Date.now() || fresh(ready.get(keyOf(item, channel)))) break;
+          // Drifted inside the no-repeat window since it was planned? Swap it before getting its stream.
+          const swapped = await avoidRepeat(item, channel);
+          if (swapped) { id = swapped.id; continue; }
           const t0 = Date.now();
           let prep = null;
           try {

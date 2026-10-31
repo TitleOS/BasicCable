@@ -381,3 +381,38 @@ test('a channel whose titles all failed recently still gets a guide instead of "
   assert.ok(rows.length >= 10, `guide has ${rows.length} rows`);
   assertContiguous(rows);
 });
+
+test('an episode that drifted inside the no-repeat window is swapped just before it airs', async () => {
+  const { avoidRepeat } = await import('../src/prefetch.js');
+  seedSeries('tt060', 'Drifty', 22, 12, 20); // 240 episodes, ~88 h: more than the window
+  const ch = store.createChannel({ name: 'Drift Window', round_minutes: 5, fill_mode: 'random', options: { noRepeatDays: 3 } });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt060', name: 'Drifty' });
+  const now = Date.now();
+  await buildChannel(ch.id, { now });
+  const item = store.epgRange(ch.id, now + 60e3, Infinity).find((r) => r.start > now);
+  // It aired 70 hours before this slot: planned outside the window, it has since slid inside.
+  store.run(`INSERT INTO history(channel_id, aired_at, ended_at, type, meta_id, video_id, title, season, episode, complete)
+    VALUES (?, ?, ?, 'series', 'tt060', ?, 'Drifty', 1, 1, 1)`, ch.id, item.start - 70 * HOUR, item.start - 70 * HOUR + 22 * 60e3, item.video_id);
+  const replacement = await avoidRepeat(item, store.getChannel(ch.id));
+  assert.ok(replacement, 'swapped');
+  assert.notEqual(replacement.video_id, item.video_id);
+  assert.equal(replacement.start, item.start, 'same time slot');
+  assertContiguous(store.epgRange(ch.id, now - HOUR, Infinity));
+  // Checked once per program and time.
+  assert.equal(await avoidRepeat(item, store.getChannel(ch.id)), null);
+});
+
+test('a lineup shorter than the window is left alone (nothing fresher to swap in)', async () => {
+  const { avoidRepeat } = await import('../src/prefetch.js');
+  const { contentMinutes } = await import('../src/scheduler.js');
+  seedSeries('tt061', 'Tiny Lineup', 30, 1, 2);
+  const ch = store.createChannel({ name: 'Tiny Lineup', round_minutes: 5, fill_mode: 'random', options: { noRepeatDays: 3 } });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt061', name: 'Tiny Lineup' });
+  assert.equal(await contentMinutes(ch.id), 60, 'two 30-minute episodes');
+  const now = Date.now();
+  await buildChannel(ch.id, { now });
+  const rows = store.epgRange(ch.id, now, Infinity).filter((r) => r.start > now);
+  const item = rows[2]; // by now both episodes have been planned before it
+  assert.equal(await avoidRepeat(item, store.getChannel(ch.id)), null);
+  assert.ok(store.epgRange(ch.id, now, Infinity).length >= rows.length, 'guide still full');
+});

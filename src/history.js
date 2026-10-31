@@ -44,6 +44,23 @@ export function lastShown(channelId, since) {
   return out;
 }
 
+/**
+ * When `videoId` last aired in full on the channel (or is planned to) in the `windowMs` before `before`, or
+ * null. `excludeId` leaves out the guide row being checked.
+ */
+export function lastAiredBefore(channelId, videoId, before, windowMs, excludeId = 0) {
+  const since = before - windowMs;
+  const r = store.get(
+    `SELECT MAX(at) AS at FROM (
+       SELECT aired_at AS at FROM history WHERE channel_id = ? AND video_id = ? AND complete = 1 AND aired_at >= ? AND aired_at < ?
+       UNION ALL
+       SELECT start AS at FROM epg WHERE channel_id = ? AND video_id = ? AND truncated = 0 AND start >= ? AND start < ? AND id != ?
+     )`,
+    Number(channelId), videoId, since, before, Number(channelId), videoId, since, before, Number(excludeId),
+  );
+  return r?.at ?? null;
+}
+
 /** A channel's history, newest first. */
 export function recentlyShown(channelId, { days = 7, limit = 200, now = Date.now() } = {}) {
   return store.all('SELECT * FROM history WHERE channel_id = ? AND aired_at >= ? AND aired_at <= ? ORDER BY aired_at DESC LIMIT ?',

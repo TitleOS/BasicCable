@@ -2,7 +2,7 @@ import { store } from './db.js';
 import { config, log } from './config.js';
 import { send, readJson, baseUrl, HttpError } from './http.js';
 import { search, expandWildcard, fetchJson } from './metadata.js';
-import { buildChannel, resolveWildcard, itemLabel } from './scheduler.js';
+import { buildChannel, resolveWildcard, itemLabel, contentMinutes } from './scheduler.js';
 import { findStreams, rankStreams, addonBase, clearStreams, RESOLUTIONS } from './picker.js';
 import { clearPrepared } from './prefetch.js';
 import { artFile } from './art.js';
@@ -541,13 +541,15 @@ export function registerApi(router) {
   }, A);
 
   // Recently shown on a channel, newest first (?days=7).
-  router.get('/api/channels/:id/history', (req, res, { id }) => {
+  router.get('/api/channels/:id/history', async (req, res, { id }) => {
     const c = requireChannel(id);
     const days = Math.min(90, Math.max(1, Number(new URL(req.url, 'http://x').searchParams.get('days')) || 7));
     const items = recentlyShown(c.id, { days }).map((r) => ({
       start: r.aired_at, end: r.ended_at, type: r.type, title: r.title, label: itemLabel(r), video_id: r.video_id, complete: !!r.complete,
     }));
-    send(res, 200, { days, noRepeatDays: noRepeatDays(c), items });
+    // How long the whole lineup runs: under the no-repeat window, reruns can't be avoided.
+    const contentHours = Math.round((await contentMinutes(c.id).catch(() => 0)) / 60);
+    send(res, 200, { days, noRepeatDays: noRepeatDays(c), contentHours, items });
   }, A);
 
   // Which debrid stream would the picker choose for what's on now (or a given guide item)?

@@ -301,6 +301,19 @@ class Planner {
 
 const building = new Map();
 
+/** Minutes of programs a channel can play (its pool and slots, every episode once), from cached metadata. */
+export async function contentMinutes(channelId) {
+  const channel = store.getChannel(channelId);
+  if (!channel) return 0;
+  const titles = [];
+  for (const s of store.listSources(channelId)) titles.push(...await titlesFor(s));
+  for (const slot of store.listSlots(channelId)) if (slot.content.kind !== 'pool') titles.push(...await titlesFor(slot.content));
+  const lib = await loadLibrary(titles, channel);
+  let minutes = 0;
+  for (const e of lib.values()) minutes += (e.type === 'series' ? e.episodes.length : 1) * e.runtime;
+  return minutes;
+}
+
 /** Extend (or rebuild, with `rebuild: true`) a channel's guide out to the horizon. */
 export function buildChannel(channelId, opts = {}) {
   const key = Number(channelId);

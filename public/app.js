@@ -457,9 +457,14 @@ function breaksPanel(ch) {
 function historyPanel(ch) {
   const body = h('div', { class: 'muted' }, 'Loading…');
   const days = h('select', {}, [1, 3, 7, 14, 30, 90].map((d) => h('option', { value: d, selected: d === 7 }, d === 1 ? 'Last 24 hours' : `Last ${d} days`)));
+  const note = h('p', { class: 'hint', style: { marginBottom: '12px' } });
   const load = async () => {
     try {
       const r = await api(`/api/channels/${ch.id}/history?days=${days.value}`);
+      const windowH = r.noRepeatDays * 24;
+      note.textContent = r.noRepeatDays > 0 && r.contentHours > 0 && r.contentHours < windowH
+        ? `This channel has about ${r.contentHours} h of programs, less than its ${r.noRepeatDays}-day no-repeat window, so they rerun about every ${r.contentHours} h (whatever aired longest ago comes back first). Add more to the pool, or lower the window, to change that.`
+        : '';
       if (!r.items.length) return body.replaceChildren(h('div', { class: 'empty' }, 'Nothing has aired yet in this period.'));
       let day = '';
       const rows = [];
@@ -482,6 +487,7 @@ function historyPanel(ch) {
     h('p', { class: 'hint', style: { marginBottom: '12px' } }, win > 0
       ? `Episodes and movies don't air again for ${win} day${win === 1 ? '' : 's'} unless nothing else is left. Items cut short don't count.`
       : 'Repeats are allowed any time on this channel.'),
+    note,
     body);
 }
 

@@ -9,7 +9,7 @@ import { store } from './db.js';
 import { config, log } from './config.js';
 import { ops } from './api.js';
 import { search, expandWildcard, lookupImdb } from './metadata.js';
-import { itemLabel, replaceItem } from './scheduler.js';
+import { itemLabel, replaceItem, contentMinutes } from './scheduler.js';
 import { runnerStatus, ffmpegCaps, interruptRunner, publishedEdge } from './playout.js';
 import { addonBase } from './picker.js';
 import { repairGuide } from './repair.js';
@@ -375,7 +375,11 @@ function registerTools(server) {
     const c = resolveChannel(channel);
     const rows = recentlyShown(c.id, { days, limit });
     const win = noRepeatDays(c);
-    const head = `### ${c.number} · ${c.name}: last ${days} day${days === 1 ? '' : 's'} (${win ? `no repeats within ${win} days` : 'repeats allowed'}; times in ${tz()})`;
+    const hours = Math.round((await contentMinutes(c.id).catch(() => 0)) / 60);
+    const small = win && hours && hours < win * 24
+      ? `\nNote: the lineup runs about ${hours} h, less than the ${win}-day window, so programs rerun about every ${hours} h (oldest first). Add titles or lower no_repeat_days to change that.`
+      : '';
+    const head = `### ${c.number} · ${c.name}: last ${days} day${days === 1 ? '' : 's'} (${win ? `no repeats within ${win} days` : 'repeats allowed'}; times in ${tz()})${small}`;
     if (!rows.length) return text(`${head}\nNothing aired in this period.`);
     let day = '';
     const out = [head];
