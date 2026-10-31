@@ -337,7 +337,7 @@ export class ChannelRunner {
         if (longGop.size > 200) longGop.delete(longGop.keys().next().value);
         this.resume = { itemId: item.id, at: startAt + produced.seconds };
         transcode = true;
-        log.info(`channel ${channel.number}: ${itemLabel(item)} has keyframes ${Math.round(produced.longSegment)}s apart; re-encoding the video from ${Math.round(startAt + produced.seconds)}s`);
+        log.info(`channel ${channel.number}: ${itemLabel(item)} has keyframes at least ${Math.round(produced.longSegment)}s apart; re-encoding the video from ${Math.round(startAt + produced.seconds)}s`);
         continue;
       }
       if (this.skipRequested) {
@@ -473,7 +473,9 @@ export class ChannelRunner {
     // The trailing "_" matters: ffmpeg names WebVTT segments "<playlist name><index>.vtt", i.e. p3_0.vtt.
     const playlist = path.join(this.dir, `p${n}_.m3u8`);
     this.programs.set(n, { vtt });
-    const args = [...inputArgs, '-output_ts_offset', this.contentTotal.toFixed(3),
+    // With maxSegment, ffmpeg also reports its progress, so a segment that stays open too long can be told
+    // apart from a hung source (ffmpeg keeps the open segment in memory, so its file doesn't grow).
+    const args = [...(maxSegment ? ['-progress', 'pipe:2', '-stats_period', '1'] : []), ...inputArgs, '-output_ts_offset', this.contentTotal.toFixed(3),
       '-f', 'hls', '-hls_time', String(SEGMENT_SECONDS), '-hls_list_size', '0', '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', path.join(this.dir, `p${n}_%05d.ts`), playlist];
     log.debug('ffmpeg', args.join(' '));
@@ -486,7 +488,21 @@ export class ChannelRunner {
       let firstOfProgram = true;
       let longSegment = 0; // length of a segment over maxSegment; ffmpeg is stopped there
       let longIndex = 0;
-      proc.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
+      let outTime = -1; // ffmpeg's output position (progress reports), and when it last moved
+      let movedAt = Date.now();
+      let partial = '';
+      proc.stderr.on('data', (d) => {
+        const lines = (partial + d).split('\n');
+        partial = lines.pop();
+        for (const line of lines) {
+          const t = line.match(/^out_time_us=(\d+)/);
+          if (t) {
+            if (Number(t[1]) > outTime) { outTime = Number(t[1]); movedAt = Date.now(); }
+          } else if (!/^\w+=\S*\s*$/.test(line)) {
+            stderr = (stderr + line + '\n').slice(-4000);
+          }
+        }
+      });
       const ingest = () => {
         if (this.cancelled.has(n) || longSegment) return;
         let text;
@@ -523,8 +539,16 @@ export class ChannelRunner {
       let seenAtCheck = 0;
       const poll = setInterval(() => {
         ingest();
-        if (seen !== seenAtCheck) { seenAtCheck = seen; lastNew = Date.now(); }
-        else if (Date.now() - lastNew > 45000 && !proc.killed) {
+        if (seen !== seenAtCheck) { seenAtCheck = seen; lastNew = Date.now(); return; }
+        // Still on the same segment well past maxSegment while the source keeps flowing (not hung): the next
+        // keyframe is too far off. Treat it like a long segment now rather than wait for the hang check.
+        if (maxSegment && !longSegment && !proc.killed && Date.now() - lastNew > (maxSegment + 10) * 1000 && Date.now() - movedAt < 5000) {
+          longSegment = (Date.now() - lastNew) / 1000;
+          longIndex = seen;
+          proc.kill('SIGKILL');
+          return;
+        }
+        if (Date.now() - lastNew > 45000 && !proc.killed) {
           log.warn(`channel ${this.channelId}: no new video for 45s, restarting the stream`);
           proc.kill('SIGKILL');
         }
