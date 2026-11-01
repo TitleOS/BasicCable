@@ -13,11 +13,14 @@ import { perBreak, clipsFor, pickBreak, readyFile } from './commercials.js';
 // live playlist when its moment in the schedule arrives. Viewers stay on real time and in step with the guide,
 // while a slow or stalled debrid read drains the server's buffer instead of their screen.
 //
-// 6s segments: players start ~3 segments behind the live edge (~18s of their own cushion). The playlist lists
-// ~60s, so a player that stalls carries on where it was instead of being pushed out of the window.
+// The playlist runs PREROLL_SECONDS ahead of what's due on screen, and that lead is the player's own cushion: a
+// player tuning in starts at the first segment, PREROLL_SECONDS behind the edge (less its own start-up time).
+// With 18s, players starting 5s late and refreshing their playlist only every target duration stalled a few
+// times before they had built up a cushion; ~30s is where they stopped. The playlist lists ~60s, so a player
+// that stalls carries on where it was instead of being pushed out of the window.
 const SEGMENT_SECONDS = 6;
 const WINDOW = 10; // segments listed in the live playlist
-const PREROLL_SECONDS = 18; // published straight away on tune-in, so players can start
+const PREROLL_SECONDS = 30; // how far ahead of the live position segments are published
 const EARLY_FAIL_SECONDS = 15; // ffmpeg dying before producing this much video means the file is the problem
 // A copied (not re-encoded) video can only be cut at its keyframes. Most files have one every 10s or less; some
 // rips go 30s+ without one, and segments that long make players stall. Past this, the video gets re-encoded.
@@ -522,6 +525,12 @@ export class ChannelRunner {
             longIndex = index;
             proc.kill('SIGKILL');
             break;
+          }
+          // The channel's timeline starts when its first video exists, not when it began looking for it: time
+          // spent connecting and seeking would otherwise come out of the players' cushion.
+          if (!this.anchored) {
+            this.anchored = true;
+            this.timeBase = Date.now() - this.contentTotal * 1000;
           }
           this.segments.push({ ...seg, program: n, index, seq: this.nextSeq++, disc: firstOfProgram && this.segments.length > 0, contentStart: this.contentTotal });
           this.contentTotal += seg.duration;

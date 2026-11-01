@@ -703,7 +703,7 @@ function registerTools(server) {
 
   server.registerTool('streamtube_skip_current', {
     title: 'Skip current program',
-    description: 'Skip what is on now on a channel and start whatever the channel\'s rules pick next (next episode, or another title). Anyone watching switches over within seconds.',
+    description: 'Skip what is on now on a channel and start whatever the channel\'s rules pick next (next episode, or another title). Anyone watching switches over once the video already sent to their player has played (up to about 30 seconds).',
     inputSchema: z.object({ channel: z.union([z.string(), z.number()]) }),
     annotations: WRITE,
   }, async ({ channel }) => {
