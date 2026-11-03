@@ -27,6 +27,16 @@ test('a release without subtitles gives way to an equally ranked one that has th
   assert.equal(got.cand.url, 'c');
 });
 
+test('an unlabelled subtitle track does not count, but still plays if nothing better turns up', async () => {
+  const unlabelled = [{ codec_name: 'subrip', tags: {} }];
+  let p = probes({ a: [], b: unlabelled, c: english });
+  let got = await pickPlayable(['a', 'b', 'c'].map((n, i) => cand(n, [1, 0, 0, 0, 0, i])), item, channel, p.fn);
+  assert.equal(got.cand.url, 'c');
+  p = probes({ a: unlabelled, b: [] });
+  got = await pickPlayable(['a', 'b'].map((n, i) => cand(n, [1, 0, 0, 0, 0, i])), item, channel, p.fn);
+  assert.equal(got.cand.url, 'a');
+});
+
 test('only two more releases are tried, and the first plays when none has subtitles', async () => {
   const p = probes({ a: [], b: [], c: [], d: english });
   const list = ['a', 'b', 'c', 'd'].map((n, i) => cand(n, [1, 0, 0, 0, 0, i]));

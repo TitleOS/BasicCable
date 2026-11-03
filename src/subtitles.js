@@ -12,6 +12,7 @@ const lang = (s) => String(s.tags?.language || s.tags?.LANGUAGE || '').trim().to
 const title = (s) => String(s.tags?.title || s.tags?.TITLE || '');
 const isSdh = (s) => !!s.disposition?.hearing_impaired || /\b(sdh|cc|hoh|hearing[ -]?impaired|closed[ -]?captions?)\b/i.test(title(s));
 const isForced = (s) => !!s.disposition?.forced || /\bforced\b/i.test(title(s));
+export const isEnglish = (s) => ENGLISH.has(lang(s));
 
 /**
  * Choose the subtitle track to show, from ffprobe's subtitle streams (in file order):

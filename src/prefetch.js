@@ -5,7 +5,7 @@ import { store } from './db.js';
 import { log } from './config.js';
 import { findStreams, forgetStream } from './picker.js';
 import { probe } from './probe.js';
-import { subtitlePlan } from './subtitles.js';
+import { subtitlePlan, isEnglish } from './subtitles.js';
 import { extendItem, replaceItem, retimeFrom, markUnplayable, isUnplayable, maxItemLength, itemLabel, contentMinutes } from './scheduler.js';
 import { breakAllowance } from './commercials.js';
 import { lastAiredBefore, noRepeatDays } from './history.js';
@@ -50,7 +50,9 @@ export async function pickPlayable(candidates, item, channel, probeFn = probe) {
       continue;
     }
     const prepared = { at: Date.now(), cand, info };
-    if (subs !== 'off' && !subtitlePlan(info.subtitles, subs)) {
+    // Only a track tagged English counts: an unlabelled one in, say, a Russian release is likely Russian.
+    const plan = subs !== 'off' && subtitlePlan(info.subtitles, subs);
+    if (subs !== 'off' && !(plan && isEnglish(plan.stream))) {
       first ??= prepared;
       continue;
     }

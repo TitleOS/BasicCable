@@ -106,7 +106,7 @@ When the file has embedded subtitles, StreamTube picks one track per program:
 
 Forced-only tracks, which carry just the foreign-language lines, are skipped.
 
-Many releases have no subtitles at all (small x265 WEBRips especially). When the best-ranked release that plays has none, StreamTube probes up to two more releases ranked level with it (same resolution, HDR, preferred words, and cached on your debrid service) and uses the first one with English subtitles. If none has them, the first release plays without.
+Many releases have no subtitles at all (small x265 WEBRips especially). When the best-ranked release that plays has none, StreamTube probes up to two more releases ranked level with it (same resolution, HDR, preferred words, and cached on your debrid service) and uses the first one with a subtitle track tagged English (an unlabelled track doesn't count here). If none has one, the first release plays as it is.
 
 How the track reaches the player depends on its format and the channel's **English subtitles** setting:
 
