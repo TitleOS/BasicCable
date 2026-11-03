@@ -156,12 +156,13 @@ export function registerAddon(router) {
     tuneIn(ip, channel.id);
     await liveRunner(channel.id, ip);
     // With subtitles on, an English caption track (filled whenever the current program has a text subtitle).
+    // CLOSED-CAPTIONS=NONE: without it ExoPlayer offers an "Unknown" CEA-608 track that is almost always empty.
     const subs = (channel.options?.subtitles || 'auto') !== 'off';
     send(res, 200, [
       '#EXTM3U',
       '#EXT-X-VERSION:3',
       subs ? '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subs.m3u8"' : null,
-      `#EXT-X-STREAM-INF:BANDWIDTH=8000000${subs ? ',SUBTITLES="subs"' : ''}`,
+      `#EXT-X-STREAM-INF:BANDWIDTH=8000000,CLOSED-CAPTIONS=NONE${subs ? ',SUBTITLES="subs"' : ''}`,
       'video.m3u8',
       '',
     ].filter((l) => l !== null).join('\n'), M3U8);

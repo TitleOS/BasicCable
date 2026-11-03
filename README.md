@@ -106,6 +106,8 @@ When the file has embedded subtitles, StreamTube picks one track per program:
 
 Forced-only tracks, which carry just the foreign-language lines, are skipped.
 
+Many releases have no subtitles at all (small x265 WEBRips especially). When the best-ranked release that plays has none, StreamTube probes up to two more releases ranked level with it (same resolution, HDR, preferred words, and cached on your debrid service) and uses the first one with English subtitles. If none has them, the first release plays without.
+
 How the track reaches the player depends on its format and the channel's **English subtitles** setting:
 
 | | Selectable track, or burned in for image subs *(default)* | Selectable track only | Off |
@@ -113,7 +115,7 @@ How the track reaches the player depends on its format and the channel's **Engli
 | Text (SRT, ASS, WebVTT) | Caption track, on by default | Caption track, on by default | None |
 | Image (Blu-ray PGS, DVD) | Burned into the video | Skipped; a text track is used if there is one | None |
 
-- **Caption tracks** cost almost nothing: ffmpeg turns them into WebVTT alongside the video. The channel's `index.m3u8` becomes an HLS master playlist with an "English" track marked default, and players can turn it off.
+- **Caption tracks** cost almost nothing: ffmpeg turns them into WebVTT alongside the video. The channel's `index.m3u8` becomes an HLS master playlist with an "English" track marked default, and players can turn it off. It also declares that the video carries no closed captions, so ExoPlayer-based players (Stremio on Android TV) don't add an empty "Unknown" caption track. Captions embedded in the video itself (CEA-608) aren't offered.
 - **Burning in** means re-encoding the video with x264. Expect real 1080p content to keep a few CPU cores busy per channel. 4K sources are scaled to 1080p first. Lower `SUBTITLE_BURN_PRESET` (for example `superfast` or `ultrafast`) if a channel can't keep up. Set the channel to **Selectable track only** to never re-encode.
 - Subtitle files that sit next to the video in a torrent can't be used. Debrid links point at the video file alone.
 - Subtitles need ffmpeg 7.x. ffmpeg 8.0's real-time pacing slows to about half speed when a subtitle stream is included, so on 8.x StreamTube plays without subtitles and logs a warning. The Docker image ships 7.1.

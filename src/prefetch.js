@@ -5,6 +5,7 @@ import { store } from './db.js';
 import { log } from './config.js';
 import { findStreams, forgetStream } from './picker.js';
 import { probe } from './probe.js';
+import { subtitlePlan } from './subtitles.js';
 import { extendItem, replaceItem, retimeFrom, markUnplayable, isUnplayable, maxItemLength, itemLabel, contentMinutes } from './scheduler.js';
 import { breakAllowance } from './commercials.js';
 import { lastAiredBefore, noRepeatDays } from './history.js';
@@ -12,6 +13,11 @@ import { lastAiredBefore, noRepeatDays } from './history.js';
 const READY_MS = 2 * 3600 * 1000; // debrid links stay valid for hours; re-check after this
 const RETRY_MS = 5 * 60 * 1000; // after finding nothing playable, wait before asking the addons again
 const FIT_TOLERANCE_MS = 5000; // guide slots within this of the real length are left alone
+const SUBTITLE_LOOKS = 2; // more releases probed when the first one has no English subtitles
+
+// Releases the ranking puts on a par: same preferred words, resolution, HDR and debrid-cached flag (only the
+// addon's order differs). An uncached release is never probed just for its subtitles: that can start a download.
+const sameTier = (a, b) => a.score.slice(0, 5).every((v, k) => v === b.score[k]);
 
 const ready = new Map(); // `${channelId}|${video_id}` -> { at, cand, info } or { at, failed: true }
 const inflight = new Map(); // same key -> Promise while a lookup is running
@@ -20,6 +26,38 @@ const keyOf = (item, channel) => `${channel.id}|${item.video_id}`;
 
 function fresh(entry) {
   return entry && Date.now() - entry.at < (entry.failed ? RETRY_MS : READY_MS);
+}
+
+/**
+ * The first candidate that probes, unless it has no English subtitles: then look a little further among
+ * equally ranked releases for one that does, and keep the first if none has. Null when none plays.
+ */
+export async function pickPlayable(candidates, item, channel, probeFn = probe) {
+  const subs = channel.options?.subtitles || 'auto';
+  let first = null;
+  let looked = 0;
+  for (const cand of candidates.slice(0, 5)) {
+    if (first && (looked++ >= SUBTITLE_LOOKS || !sameTier(cand, first.cand))) break;
+    const info = await probeFn(cand.url, cand.headers);
+    if (!info) {
+      log.info(`channel ${channel.number}: stream did not probe, trying next (${cand.label.slice(0, 80)})`);
+      forgetStream(item, channel, cand.url);
+      continue;
+    }
+    if (info.duration && info.duration < 90 && item.end - item.start > 5 * 60000) {
+      // Debrid "downloading" placeholder clips are short; skip them.
+      forgetStream(item, channel, cand.url);
+      continue;
+    }
+    const prepared = { at: Date.now(), cand, info };
+    if (subs !== 'off' && !subtitlePlan(info.subtitles, subs)) {
+      first ??= prepared;
+      continue;
+    }
+    if (first) log.info(`channel ${channel.number}: ${itemLabel(item)}: using a release with subtitles (${cand.label.slice(0, 80)})`);
+    return prepared;
+  }
+  return first;
 }
 
 /**
@@ -33,20 +71,8 @@ export function prepareStream(item, channel) {
   if (fresh(hit)) return Promise.resolve(hit.failed ? null : hit);
   if (inflight.has(key)) return inflight.get(key);
   const job = (async () => {
-    const candidates = await findStreams(item, channel);
-    for (const cand of candidates.slice(0, 5)) {
-      const info = await probe(cand.url, cand.headers);
-      if (!info) {
-        log.info(`channel ${channel.number}: stream did not probe, trying next (${cand.label.slice(0, 80)})`);
-        forgetStream(item, channel, cand.url);
-        continue;
-      }
-      if (info.duration && info.duration < 90 && item.end - item.start > 5 * 60000) {
-        // Debrid "downloading" placeholder clips are short; skip them.
-        forgetStream(item, channel, cand.url);
-        continue;
-      }
-      const prepared = { at: Date.now(), cand, info };
+    const prepared = await pickPlayable(await findStreams(item, channel), item, channel);
+    if (prepared) {
       ready.set(key, prepared);
       return prepared;
     }
