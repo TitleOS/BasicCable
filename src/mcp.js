@@ -180,7 +180,7 @@ function channelConfigLine(c) {
   return [`${c.resolution}p (fallback ${c.fallback})`, { shuffle: 'shuffle shows', sequential: 'rotate shows in order', random: 'random episodes' }[c.fill_mode],
     `round to ${c.round_minutes || 0} min`, `subtitles ${o.subtitles || 'auto'}`, `audio ${o.audio || 'aac'}/${o.audioLanguage || 'eng'}`,
     o.excludeKeywords?.length ? `skip: ${o.excludeKeywords.join(', ')}` : null, o.avoidDolbyVision === false ? 'allows Dolby Vision' : null,
-    o.includeSpecials ? 'includes specials' : null, o.preferHdr10 ? 'prefers HDR10' : null, o.preferHdr ? 'prefers HDR' : null,
+    o.includeSpecials ? 'includes specials' : null, o.preferHdr10 ? 'prefers HDR10' : null, o.preferHdr ? 'prefers HDR' : null, o.upNextOverlay ? 'up-next overlay' : null,
     noRepeatDays(c) ? `no repeats within ${noRepeatDays(c)} days` : 'repeats allowed',
     perBreak(c) ? `${perBreak(c)} commercial${perBreak(c) > 1 ? 's' : ''} per break (${o.commercialBundles?.length ? o.commercialBundles.join(', ') : 'all bundles'})` : null,
     c.enabled ? null : 'DISABLED'].filter(Boolean).join(' · ');
@@ -240,6 +240,8 @@ const channelFields = {
   include_specials: z.boolean().optional().describe('Include season 0 specials'),
   prefer_hdr: z.boolean().optional().describe('Among releases at the chosen resolution, prefer HDR (HDR10, HDR10+, HLG) over SDR'),
   prefer_hdr10: z.boolean().optional().describe('Among releases at the chosen resolution, prefer HDR10/HDR10+ first'),
+  up_next_overlay: z.boolean().optional()
+    .describe('Show a box in the corner during the last minute of each program with what is on next and after that (re-encodes that minute; skipped for HDR)'),
   commercials_per_break: z.number().int().min(0).max(MAX_PER_BREAK).optional()
     .describe('Commercials played between programs: 0 = no commercial breaks, 1-3 clips per break'),
   commercial_bundles: z.array(z.string()).optional()
@@ -247,7 +249,7 @@ const channelFields = {
   no_repeat_days: z.number().min(0).max(60).optional().describe('An episode or movie that aired waits this many days before airing again on the channel (default 3; 0 = no limit)'),
 };
 
-const OPTION_KEYS = { subtitles: 'subtitles', audio: 'audio', audio_language: 'audioLanguage', exclude_keywords: 'excludeKeywords', avoid_dolby_vision: 'avoidDolbyVision', include_specials: 'includeSpecials', prefer_hdr: 'preferHdr', prefer_hdr10: 'preferHdr10', no_repeat_days: 'noRepeatDays', commercials_per_break: 'commercialsPerBreak', commercial_bundles: 'commercialBundles' };
+const OPTION_KEYS = { subtitles: 'subtitles', audio: 'audio', audio_language: 'audioLanguage', exclude_keywords: 'excludeKeywords', avoid_dolby_vision: 'avoidDolbyVision', include_specials: 'includeSpecials', prefer_hdr: 'preferHdr', prefer_hdr10: 'preferHdr10', up_next_overlay: 'upNextOverlay', no_repeat_days: 'noRepeatDays', commercials_per_break: 'commercialsPerBreak', commercial_bundles: 'commercialBundles' };
 
 /** Plain tool arguments -> the REST-style body ops.* expect. Options merge over the channel's current ones. */
 function channelBody(args, current = null) {

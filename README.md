@@ -18,6 +18,7 @@ You build channels in a web UI that runs in a container on your network. Each ch
 - **HDR.** Tick *Prefer HDR* on a channel to pick HDR10, HDR10+ or HLG over SDR, and *Prefer HDR10* to pick HDR10/HDR10+ first. Either one only reorders releases at the resolution the picker settled on; it never trades resolution for HDR. While *Avoid Dolby Vision-only releases* is ticked, a Dolby Vision file without an HDR10 layer doesn't count as HDR.
 - **No reruns too soon.** Everything that airs is recorded in a per-channel *Recently shown* history (kept 90 days, shown in the channel editor). A channel won't air the same episode or movie again within its *Don't repeat within* window, 3 days by default: if S02E03 aired Monday at 10 AM, it can't come back before Thursday 10 AM. If every choice is a repeat (a small pool), the one shown longest ago plays instead of dead air. Episodes cut short don't count.
 - **Commercial breaks.** Upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps"…) and have a channel play 1–3 of them between programs. See [Commercials](#commercials).
+- **"Up next" box.** Optionally, in the last minute of each program a small box in the corner shows what's on next and after that, so you don't have to leave the stream to check the guide. See [Up next box](#up-next-box).
 - **Streams prepared ahead.** About 10 minutes before each program airs, Basic Cable asks your addons, picks the file and checks it. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore.** Export your channels, pools, wildcards, slots and each show's progress as one JSON file, and import it into another install. See [Backup and restore](#backup-and-restore).
 - **One stream per device.** Each viewer IP watches one channel at a time, so channel surfing doesn't leave old channels running. See [Stream cap](#stream-cap).
@@ -155,6 +156,24 @@ How breaks fit the live guide:
 **Bulk loading:** clips live under `commercials/<bundle>/` in the data volume. To load many at once, copy them into those folders (or bind-mount a host folder on `/data/commercials`) and press **Scan for new files**. Files deleted from a folder drop out of the library on the next scan.
 
 **Backups and MCP:** backups keep each channel's commercial settings but not the clips, so copy the `commercials` folder separately if you move installs. Over MCP, `basiccable_list_commercials` shows the library, and `basiccable_update_channel` takes `commercials_per_break` and `commercial_bundles`.
+
+## Up next box
+
+Tick **Show "Up next" in the last minute** on a channel. During the last minute of each program, a semi-transparent box in the bottom-right corner of the picture lists the next program and the one after it, with their start times:
+
+```
+UP NEXT · 8:30 PM
+Modern Family S02E03 · The Kiss
+THEN · 9:00 PM
+The Office S04E01 · Fun Run
+```
+
+The box is drawn into the video itself, so it shows on every player. That has a cost:
+
+- **That minute is re-encoded** (x264 at `SUBTITLE_BURN_PRESET`, at most 1080p). Expect one to two CPU cores busy for that minute per watched channel. The rest of the program is still copied as-is.
+- **A hand-over 60 seconds before the end.** The copied part stops there and the re-encoded part takes over, the same way playback resumes after a dropped link. Most players carry straight on; some show a brief stutter.
+- **HDR programs get no box**, since re-encoding them would flatten their colours.
+- The box shows the guide as it stands when the last minute starts. Programs that are re-encoded anyway (image subtitles, sparse keyframes) get the box with no extra hand-over.
 
 ## Backup and restore
 

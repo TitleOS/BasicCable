@@ -265,6 +265,7 @@ function channelForm(ch) {
     includeSpecials: h('input', { type: 'checkbox', checked: !!o.includeSpecials }),
     preferHdr: h('input', { type: 'checkbox', checked: !!o.preferHdr }),
     preferHdr10: h('input', { type: 'checkbox', checked: !!o.preferHdr10 }),
+    upNextOverlay: h('input', { type: 'checkbox', checked: !!o.upNextOverlay }),
     noRepeatDays: h('input', { type: 'number', min: 0, max: 60, step: 0.5, value: o.noRepeatDays ?? 3 }),
     enabled: h('input', { type: 'checkbox', checked: !!c.enabled }),
   };
@@ -275,7 +276,7 @@ function channelForm(ch) {
       options: {
         audioLanguage: f.audioLanguage.value, audio: f.audio.value, subtitles: f.subtitles.value, excludeKeywords: f.excludeKeywords.value,
         avoidDolbyVision: f.avoidDolbyVision.checked, includeSpecials: f.includeSpecials.checked,
-        preferHdr: f.preferHdr.checked, preferHdr10: f.preferHdr10.checked, noRepeatDays: f.noRepeatDays.value,
+        preferHdr: f.preferHdr.checked, preferHdr10: f.preferHdr10.checked, upNextOverlay: f.upNextOverlay.checked, noRepeatDays: f.noRepeatDays.value,
         commercialsPerBreak: o.commercialsPerBreak || 0, commercialBundles: o.commercialBundles || [],
       },
     };
@@ -305,6 +306,7 @@ function channelForm(ch) {
       h('label', { class: 'check' }, f.includeSpecials, 'Include specials (season 0)'),
       h('label', { class: 'check', title: 'Among releases at the chosen resolution, pick HDR (HDR10, HDR10+, HLG) over SDR' }, f.preferHdr, 'Prefer HDR'),
       h('label', { class: 'check', title: 'Among releases at the chosen resolution, pick HDR10 / HDR10+ first' }, f.preferHdr10, 'Prefer HDR10'),
+      h('label', { class: 'check', title: 'In the last minute of each program, a box in the corner shows what is on next and after that. That minute is re-encoded (some CPU, and a brief hand-over some players notice); skipped for HDR programs' }, f.upNextOverlay, 'Show "Up next" in the last minute'),
       h('span', { class: 'spacer' }),
       h('button', { class: 'btn primary', onclick: (e) => save(e.currentTarget) }, ch ? 'Save' : 'Create channel')));
 }

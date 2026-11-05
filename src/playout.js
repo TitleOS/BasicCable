@@ -7,6 +7,7 @@ import { headerArgs } from './probe.js';
 import { prepareStream, dropPrepared, skipUnplayable, preparedFor, fitGuideToFile } from './prefetch.js';
 import { buildChannel, itemLabel, retimeFrom } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
+import { UP_NEXT_SECONDS, upNextFont, upNextText, upNextFilter } from './upnext.js';
 import { perBreak, clipsFor, pickBreak, readyFile } from './commercials.js';
 
 // Read-ahead: ffmpeg reads up to READ_AHEAD_SECONDS ahead of real time, but each segment only appears in the
@@ -319,8 +320,26 @@ export class ChannelRunner {
         log.warn(`channel ${channel.number}: skipping subtitles, ffmpeg ${caps.version} can't pace them in real time (use ffmpeg 7.x)`);
       }
       if (subs) this.status.stream.subtitles = `${subs.stream.tags?.title || subs.stream.tags?.language || 'track ' + subs.index} (${subs.delivery === 'vtt' ? 'selectable' : 'burned in'})`;
+      const hdr = /smpte2084|arib-std-b67/.test(info.video?.color_transfer || '');
+      const end = Math.min(info.duration || Infinity, startAt + limit);
+      // "Up next" box over the last minute. Copied video is played up to that minute and the rest re-encoded with
+      // the box drawn in (a hand-over like a resume); video that's re-encoded anyway just gets the box. HDR stays
+      // copied, so it gets no box.
+      let upNext = null; // { from: seconds into this run, split: stop the copied run there }
+      if (channel.options?.upNextOverlay && caps.drawtext && upNextFont) {
+        const from = end - UP_NEXT_SECONDS - startAt;
+        const encoding = transcode || subs?.delivery === 'burn';
+        if (hdr) {
+          if (attempt === 0 && resumeAt == null) log.info(`channel ${channel.number}: ${itemLabel(item)} is HDR; no "Up next" box (it would mean re-encoding)`);
+        } else if (this.resume?.upNext && resumeAt != null) upNext = { from: 0, split: false };
+        else if (from > 10 && !encoding) upNext = { from, split: true };
+        else upNext = { from: Math.max(0, from), split: false };
+      }
+      const overlay = upNext && !upNext.split ? this.upNextOverlay(item, channel, info, upNext.from) : null;
+      if (upNext && !upNext.split && !overlay) upNext = null; // nothing after it in the guide
+      const runLimit = upNext?.split ? upNext.from : limit;
       log.info(`channel ${channel.number}: ${resumeAt != null ? 'resuming' : 'playing'} ${itemLabel(item)} from ${Math.round(startAt)}s @ ${info.video?.height || '?'}p` +
-        (transcode ? ', re-encoding video' : '') +
+        (transcode || overlay ? ', re-encoding video' : '') + (overlay ? `, "Up next" box${upNext.from > 0 ? ` from ${Math.round(startAt + upNext.from)}s` : ''}` : '') +
         (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''})` : '') +
         (attempt === 0 ? (waited < 200 ? ', stream was prepared ahead' : `, stream picked in ${(waited / 1000).toFixed(1)}s`) : ''));
       if (this.skipRequested) {
@@ -329,8 +348,8 @@ export class ChannelRunner {
         return 'skipped';
       }
       // (HDR video stays copied: re-encoding it here would flatten its colours.)
-      const copying = !transcode && subs?.delivery !== 'burn' && !/smpte2084|arib-std-b67/.test(info.video?.color_transfer || '');
-      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, limit, subs, { transcode, burst }),
+      const copying = !transcode && !overlay && subs?.delivery !== 'burn' && !hdr;
+      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, runLimit, subs, { transcode, burst, overlay }),
         { vtt: subs?.delivery === 'vtt', maxSegment: copying ? LONG_SEGMENT_SECONDS : 0 });
       if (this.stopped) return 'done';
       if (produced.longSegment && !this.skipRequested) {
@@ -349,9 +368,13 @@ export class ChannelRunner {
         this.resume = null;
         return 'skipped';
       }
+      // The copied part ran up to the last minute: carry on from there with the "Up next" box.
+      if (upNext?.split && produced.code === 0 && produced.seconds >= runLimit - 20) {
+        this.resume = { itemId: item.id, at: startAt + produced.seconds, upNext: true };
+        continue;
+      }
       // ffmpeg also exits cleanly when a debrid link dies (it sees an early end of file), so only call it
       // finished if it got to the end of the file or of the slot.
-      const end = Math.min(info.duration || Infinity, startAt + limit);
       if (produced.code === 0 && startAt + produced.seconds >= end - 20) {
         this.resume = null;
         return 'done';
@@ -413,7 +436,21 @@ export class ChannelRunner {
     this.skipRequested = false;
   }
 
-  mainArgs(cand, info, channel, offset, limit, subs, { transcode = false, burst = 20 } = {}) {
+  /**
+   * drawtext for the "Up next" box, appearing `from` seconds into the run, with whatever follows `item` in the
+   * guide as it stands now. Null when nothing follows it.
+   */
+  upNextOverlay(item, channel, info, from) {
+    const next = store.epgAfter(this.channelId, item.start);
+    if (!next) return null;
+    const later = store.epgAfter(this.channelId, next.start);
+    const textFile = path.join(this.dir, `upnext-${this.program + 1}.txt`);
+    fs.writeFileSync(textFile, upNextText(next, later, { label: itemLabel, timeZone: store.getSettings().timezone }));
+    // Re-encoded video is at most 1080p (see mainArgs).
+    return upNextFilter({ textFile, font: upNextFont, height: Math.min(1080, info.video?.height || 1080), from });
+  }
+
+  mainArgs(cand, info, channel, offset, limit, subs, { transcode = false, burst = 20, overlay = null } = {}) {
     const opts = channel.options || {};
     const audioIdx = pickAudio(info.audio, opts.audioLanguage);
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
@@ -427,12 +464,13 @@ export class ChannelRunner {
     args.push('-i', cand.url, '-t', limit.toFixed(2));
     if (subs?.delivery === 'burn') {
       // Image subtitles: overlay them and re-encode, with a keyframe every 2s so segments stay on size.
-      args.push('-filter_complex', burnFilter(info.video || {}, subs.stream, subs.index), '-map', '[vout]');
+      const graph = burnFilter(info.video || {}, subs.stream, subs.index);
+      args.push('-filter_complex', overlay ? graph.replace(/\[vout\]$/, `,${overlay}[vout]`) : graph, '-map', '[vout]');
       args.push('-c:v', 'libx264', '-preset', BURN_PRESET, '-crf', '21', '-maxrate', '10M', '-bufsize', '20M',
         '-force_key_frames', 'expr:gte(t,n_forced*2)', '-sc_threshold', '0');
-    } else if (transcode) {
-      // Fallback for files that won't remux: plain H.264, at most 1080p.
-      args.push('-map', '0:v:0', '-vf', "scale=-2:'min(1080,ih)',format=yuv420p");
+    } else if (transcode || overlay) {
+      // Files that won't remux (or to draw the "Up next" box): plain H.264, at most 1080p.
+      args.push('-map', '0:v:0', '-vf', `scale=-2:'min(1080,ih)',format=yuv420p${overlay ? `,${overlay}` : ''}`);
       args.push('-c:v', 'libx264', '-preset', BURN_PRESET, '-crf', '21', '-maxrate', '10M', '-bufsize', '20M',
         '-force_key_frames', 'expr:gte(t,n_forced*2)', '-sc_threshold', '0');
     } else {

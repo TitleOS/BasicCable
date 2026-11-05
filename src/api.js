@@ -46,6 +46,8 @@ function channelInput(b, partial = false) {
       // Days before an episode or movie may air again on this channel (0 = no limit).
       noRepeatDays: o.noRepeatDays === undefined || o.noRepeatDays === '' ? 3 : Math.min(60, Math.max(0, Number(o.noRepeatDays) || 0)),
       includeSpecials: !!o.includeSpecials,
+      // An "Up next" box over the last minute of each program (that minute is re-encoded to draw it).
+      upNextOverlay: !!o.upNextOverlay,
       // Commercial breaks between programs: how many clips (0 = off) and from which bundles (none picked = all).
       commercialsPerBreak: Math.max(0, Math.min(ads.MAX_PER_BREAK, parseInt(o.commercialsPerBreak, 10) || 0)),
       commercialBundles: [...new Set((Array.isArray(o.commercialBundles) ? o.commercialBundles : String(o.commercialBundles || '').split(','))
