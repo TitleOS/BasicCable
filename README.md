@@ -2,31 +2,31 @@
 
 # Basic Cable
 
-Virtual live TV channels for Stremio, built from any show or movie Stremio can find and played through the Stremio stream addons you've configured with your debrid service.
+Basic Cable turns shows and movies from Stremio into scheduled live TV channels. It runs in a container on your network and plays everything through the Stremio stream addons you've set up with a debrid service. It doesn't provide any media of its own (see the [disclaimer](#disclaimer)).
 
-Basic Cable doesn't provide any media itself; see the [disclaimer](#disclaimer).
-
-You build channels in a web UI that runs in a container on your network. Each channel has a guide that runs on the real clock. When you open a channel in Stremio, Basic Cable finds a cached debrid stream for whatever is on and joins it at the current point. If *Modern Family* started 10 minutes ago, you start 10 minutes in.
+Each channel has a guide that runs on the real clock. Open a channel in Stremio and you join whatever is on, at the point it has reached: if *Modern Family* started 10 minutes ago, you start 10 minutes in.
 
 ![The Basic Cable web UI: a guide with 31 channels, each showing what's on now with its progress and what's next, above a scrolling program grid](docs/guide.png)
 
-- **Auto-fill pools.** Add shows, movies or wildcards to a channel. Any hour without a time slot gets filled from the pool. Shows play their episodes in order and remember where they stopped.
-- **Time slots.** Weekly blocks such as "Weeknights 8:00 PM: Modern Family" or "Weekends 10 PM–1 AM: `Batman*` movies".
-- **Wildcards.** `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. You can untick any match. New titles that match are picked up each day.
-- **English subtitles.** Basic Cable looks for an English SDH track in the file, then the first English or unlabelled one. Text subtitles become a selectable caption track. Image subtitles (Blu-ray PGS) are burned into the picture. See [Subtitles](#subtitles).
-- **Target resolution per channel.** The picker uses the exact resolution when it can. Otherwise it takes the next best: by default the nearest lower one, or optionally the nearest higher one. It only uses cached, direct debrid links, and it skips CAM, telesync and TVSYNC releases, Dolby Vision-only files (optional) and any keywords you list.
-- **The right show.** Addons sometimes answer one show's id with a sibling's files (for example *Star Wars: The Clone Wars* episodes for the 2003 *Star Wars: Clone Wars*). Basic Cable reads the title off each release's file name and drops a release that names a different show or movie it plays on any channel. Namesakes (*Doctor Who* 2005 and 2023) are told apart by the year in the release name. Releases whose names it can't read, or that name something it doesn't play, are kept.
-- **Preferred and blocked releases.** Releases whose names contain a preferred word win over everything else, resolution included. The default is `Superfan`, so The Office plays its extended Superfan episodes when an addon has them. Blocked words (Settings, whole words, every channel) rule a release out entirely. The default blocks `YIFY` and `YTS`, whose small re-encodes look soft on a big screen.
-- **HDR.** Tick *Prefer HDR* on a channel to pick HDR10, HDR10+ or HLG over SDR, and *Prefer HDR10* to pick HDR10/HDR10+ first. Either one only reorders releases at the resolution the picker settled on; it never trades resolution for HDR. While *Avoid Dolby Vision-only releases* is ticked, a Dolby Vision file without an HDR10 layer doesn't count as HDR.
-- **No reruns too soon.** Everything that airs is recorded in a per-channel *Recently shown* history (kept 90 days, shown in the channel editor). A channel won't air the same episode or movie again within its *Don't repeat within* window, 3 days by default: if S02E03 aired Monday at 10 AM, it can't come back before Thursday 10 AM. If every choice is a repeat (a small pool), the one shown longest ago plays instead of dead air. Episodes cut short don't count.
-- **Commercial breaks.** Upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps"…) and have a channel play 1–3 of them between programs. See [Commercials](#commercials).
-- **"Up next" box.** Optionally, in the last minute of each program a small box in the corner shows what's on next and after that, so you don't have to leave the stream to check the guide. See [Up next box](#up-next-box).
-- **Streams prepared ahead.** About 10 minutes before each program airs, Basic Cable asks your addons, picks the file and checks it. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
-- **Backup and restore.** Export your channels, pools, wildcards, slots and each show's progress as one JSON file, and import it into another install. See [Backup and restore](#backup-and-restore).
-- **One stream per device.** Each viewer IP watches one channel at a time, so channel surfing doesn't leave old channels running. See [Stream cap](#stream-cap).
-- **Manage it by asking.** A built-in MCP server lets Claude (or any MCP client) create and edit channels from plain requests like "make a Saturday-morning cartoons channel". See [MCP server](#mcp-server).
-- **Live guide.** The web UI shows a ticking clock, a now-playing strip with progress bars and an EPG grid. Click any program to see which stream it would pick.
-- **Other players.** Besides the Stremio addon you get an M3U playlist and an XMLTV guide for VLC, Kodi, TiviMate, Jellyfin, Plex and similar apps.
+## Features
+
+- **Auto-fill pools**: add shows, movies or wildcards to a channel, and any time not covered by a time slot is filled from the pool. Shows play in episode order and pick up where they left off.
+- **Time slots**: weekly blocks like "Weeknights 8:00 PM: Modern Family" or "Weekends 10 PM–1 AM: `Batman*` movies".
+- **Wildcards**: `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. Untick any match you don't want. New matching titles are added daily.
+- **Subtitles**: English text subtitles become a selectable track, and image subtitles (Blu-ray PGS) are burned in. See [Subtitles](#subtitles).
+- **Resolution per channel**: each channel has a target resolution and falls back to the nearest lower one, or the nearest higher one if you prefer. Only cached, direct debrid links are used. CAM, telesync and TVSYNC releases are skipped, and so are Dolby Vision-only files (optional) and anything matching the channel's skip words.
+- **Wrong-show filtering**: addons sometimes return a similarly named show's files, such as *Star Wars: The Clone Wars* episodes for the 2003 *Star Wars: Clone Wars*. Basic Cable reads the title from each file name and drops releases that name a different show or movie it plays. Shows that share a name (*Doctor Who* 2005 and 2023) are told apart by the year in the release name. Releases it can't read, or that name something it doesn't play, are kept.
+- **Preferred and blocked words**: a release with a preferred word in its name wins over everything else, resolution included. The default is `Superfan`, so The Office plays its extended episodes when an addon has them. Blocked words rule a release out on every channel; the defaults are `YIFY` and `YTS`, whose small re-encodes look soft on a big screen.
+- **HDR**: *Prefer HDR* picks HDR10, HDR10+ or HLG over SDR, and *Prefer HDR10* puts HDR10/HDR10+ first. Neither one gives up resolution for HDR. With *Avoid Dolby Vision-only releases* ticked, a Dolby Vision file without an HDR10 layer doesn't count as HDR.
+- **No-repeat window**: a channel won't air the same episode or movie again within 3 days, or whatever window you set. Each channel keeps 90 days of history, shown in the channel editor. If every choice is a repeat (a small pool), the one shown longest ago plays. Episodes that were cut short don't count.
+- **Commercial breaks**: upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps") and play 1–3 of them between programs. See [Commercials](#commercials).
+- **"Up next" box**: optionally, during a program's last minute, a box in the corner shows the next two programs. See [Up next box](#up-next-box).
+- **Streams picked in advance**: about 10 minutes before a program starts, its file is chosen and checked. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
+- **Backup and restore**: export channels, pools, wildcards, slots and each show's progress to one JSON file and import it elsewhere. See [Backup and restore](#backup-and-restore).
+- **One stream per device**: each viewer IP watches one channel at a time, and the channel you switch away from stops. See [Stream cap](#stream-cap).
+- **MCP server**: Claude, or any MCP client, can create and edit channels from requests like "make a Saturday-morning cartoons channel". See [MCP server](#mcp-server).
+- **Web guide**: a clock, a now-playing view with progress bars and an EPG grid. Click a program to see which stream it would use.
+- **IPTV output**: an M3U playlist and an XMLTV guide for VLC, Kodi, TiviMate, Jellyfin, Plex and similar apps.
 
 ## How it works
 
@@ -40,19 +40,19 @@ Stremio ──/live/3/index.m3u8───────▶ Basic Cable
                          ffmpeg -ss 600 -readrate 1 -i <debrid link> -c:v copy → HLS
 ```
 
-The Stremio stream protocol has no "start at" field, so Basic Cable does the playout itself. A single ffmpeg process per channel reads the debrid file in real time from the scheduled offset. It remuxes the video without re-encoding and, by default, converts the audio to stereo AAC. The output is a rolling HLS playlist. When a program ends, the next one is joined to the same playlist with a discontinuity marker, so playback continues like a real channel. Everyone watching a channel shares that one ffmpeg process, so a channel uses one debrid connection no matter how many people watch. ffmpeg stops a minute after the last viewer leaves.
+Stremio's stream protocol has no way to say "start 10 minutes in". Basic Cable does the playout itself instead. Each channel runs one ffmpeg process. It reads the debrid file in real time from the scheduled position, copies the video, converts the audio to stereo AAC (by default) and writes a rolling HLS playlist. When a program ends, the next one is appended to the same playlist after a discontinuity marker. Everyone watching a channel shares that process and its one debrid connection. ffmpeg stops a minute after the last viewer leaves.
 
-The live playlist is built to ride out a flaky debrid connection without errors:
+Much of the playout code is there to cope with debrid connections that slow down or drop:
 
-- **Read-ahead.** Each watched channel reads up to 2 minutes ahead of real time from debrid. A segment appears in the live playlist only when its moment in the schedule arrives, so viewers stay on real time and in step with the guide, while a slow or stalled debrid read drains the server's buffer instead of their screen. In testing, a 60-second stall didn't interrupt publishing at all; the buffer dipped from 119 to 94 seconds and refilled within 15 seconds afterwards. If a debrid host hangs outright, ffmpeg reconnects after 20 seconds, and a watchdog restarts the stream (from the last delivered second) if no video arrives for 45 seconds.
-- **Player cushion.** The playlist runs 30 seconds ahead of live, counted from the moment the channel's first video exists, so a player that tunes in starts with about 30 seconds of its own buffer. (With 18 seconds, players stalled a few times in their first minutes.) The playlist lists about 60 seconds, so a player that stalls carries on from where it was instead of being pushed out of the window (an error followed by a jump ahead).
-- **Hand-overs.** If the next program's stream isn't ready when one ends, short "Up next" filler segments keep the playlist moving, so players don't give up and drop back to their menus.
-- **Continuous timestamps.** Each program's timestamps continue from the last one, so players that ignore discontinuity markers (mpv, which Stremio desktop uses) never see time run backwards at an episode change.
-- **Drop-outs.** If a link drops part-way through an episode, playback resumes from the last second delivered. Nothing is skipped; the end of the episode is trimmed instead. ffmpeg sometimes exits "normally" when a link dies, so Basic Cable only counts an episode as finished if it reached the end of the file or its slot.
-- **Sparse keyframes.** Copied video can only be cut into segments at its keyframes. Most files have one every 10 seconds or less, but some rips go 30 seconds or more without one, and segments that long make players stall. When a segment comes out longer than 12 seconds, it is thrown away before it is published and the rest of the program is re-encoded with a keyframe every 2 seconds (about one to two CPU cores for 1080p). HDR video stays copied, since re-encoding it would flatten its colours.
-- **Bad files.** A file that fails as soon as it starts gets one retry with the video re-encoded. If that fails too, the next release is tried, and if every release fails, another episode takes its place. If nothing works at all, a "couldn't play" slate is shown and Basic Cable keeps retrying.
+- Read-ahead: each watched channel reads up to 2 minutes ahead of real time, but a segment only appears in the playlist when the schedule reaches it. Viewers stay in step with the guide, and a slow read uses up the server's buffer instead of theirs. In testing, a 60-second stall didn't interrupt playback: the buffer went from 119 to 94 seconds and was full again 15 seconds later. If a debrid host stops responding, ffmpeg reconnects after 20 seconds, and if no video arrives for 45 seconds the stream restarts from the last second delivered.
+- Player buffer: the playlist runs 30 seconds ahead of live, counted from when the channel's first video exists, which gives a player about 30 seconds of its own buffer when it tunes in. At 18 seconds, players stalled a few times in their first minutes. The playlist lists about 60 seconds of video, which lets a player that stalls carry on where it was instead of erroring and jumping ahead.
+- Between programs: if the next program's stream isn't ready yet, short "Up next" filler segments keep the playlist moving. Without them, players give up and return to their menus.
+- Timestamps: each program's timestamps continue from the previous one, because some players ignore discontinuity markers (mpv, which Stremio desktop uses) and would otherwise see time jump backwards.
+- Dropped links: playback resumes from the last second delivered and the end of the episode is trimmed instead. Because ffmpeg sometimes exits normally when a link dies, an episode only counts as finished if it reached the end of the file or of its slot.
+- Sparse keyframes: copied video can only be cut at keyframes. Most files have one at least every 10 seconds, but some rips go 30 seconds or more without one, and segments that long make players stall. A segment longer than 12 seconds is discarded before it's published, and the rest of the program is re-encoded with a keyframe every 2 seconds (one to two CPU cores at 1080p). HDR video stays copied, since re-encoding would flatten its colours.
+- Bad files: a file that fails right away is retried once with the video re-encoded. If that fails, the next release is tried, and if every release fails, another episode takes its place. If nothing works, a "couldn't play" slate is shown and Basic Cable keeps retrying.
 
-Failed segment and playlist requests are logged as warnings, so if a player hits a problem, it shows up in the logs.
+Failed segment and playlist requests are logged as warnings, which makes player problems easy to find in the logs.
 
 ## Quick start
 
@@ -60,57 +60,65 @@ Failed segment and playlist requests are logged as warnings, so if a player hits
 docker compose up -d --build
 ```
 
-Open `http://<server-ip>:7000` from any device on your network.
+Open `http://<server-ip>:7000` from a device on your network.
 
-1. **Settings → Debrid stream addons.** Paste the manifest URL of each Stremio stream addon you've set up with your debrid service, one per line. Most such addons put your debrid key inside the manifest URL when you configure them, so treat these URLs like passwords. Click **Test addons** to confirm each one returns cached links.
-2. **Channels → New channel.** Name it, pick a target resolution, then add shows or movies to the auto-fill pool, or add a wildcard. Add time slots if you want fixed programming.
-3. **Connect.** Copy the manifest URL, then in Stremio go to **Addons**, paste it into the search box and click **Install**. The one-click install button only appears for https addresses, because Stremio treats `stremio://` links as https. The channels show up under **Discover → TV → Basic Cable**.
+1. Under **Settings → Debrid stream addons**, paste the manifest URL of each Stremio stream addon you've set up with your debrid service, one per line. Most of these addons put your debrid key in the manifest URL, so treat the URLs like passwords. **Test addons** checks that each one returns cached links.
+2. Under **Channels → New channel**, give the channel a name and a target resolution, then add shows, movies or a wildcard to its auto-fill pool. Add time slots if you want fixed programming.
+3. On the **Connect** page, copy the manifest URL. In Stremio, go to **Addons**, paste it into the search box and click **Install**. (The one-click install button only appears for https addresses, because Stremio treats `stremio://` links as https.) The channels appear under **Discover → TV → Basic Cable**.
 
-> Open the web UI through the server's LAN address, not `localhost`, before you copy the install link. Stremio on your TV needs an address it can reach. If you use a reverse proxy, set **Public URL** in Settings or `BASE_URL` in compose.
+> Open the web UI through the server's LAN address, not `localhost`, before copying the install link: Stremio on your TV needs an address it can reach. Behind a reverse proxy, set **Public URL** in Settings or `BASE_URL` in compose.
 
 ### Stremio clients and https
 
-The desktop, Android and Android TV apps accept plain `http://` LAN addresses. **Stremio Web** (web.stremio.com) only loads `https` addons. To use Basic Cable there, put it behind a reverse proxy with a certificate, such as Caddy, Nginx Proxy Manager or Tailscale Serve, and set the public URL.
+The desktop, Android and Android TV apps accept plain `http://` LAN addresses. **Stremio Web** (web.stremio.com) only loads `https` addons. To use Basic Cable there, put it behind a reverse proxy with a certificate (Caddy, Nginx Proxy Manager, Tailscale Serve) and set the public URL.
 
 ## Configuration
 
 | Variable | Default | |
 |---|---|---|
-| `TZ` | `UTC` in the compose file, otherwise the system's | Timezone for the guide and time slots, as an IANA name such as `America/New_York` or `Europe/London`. Set it to your own: with UTC, a "weeknights 8 PM" slot airs at 8 PM UTC. You can also change it in Settings. |
+| `TZ` | `UTC` in the compose file, otherwise the system's | Timezone for the guide and time slots, as an IANA name such as `America/New_York` or `Europe/London`. Change it to yours: with UTC, a "weeknights 8 PM" slot airs at 8 PM UTC. It can also be changed in Settings. |
 | `PORT` | `7000` | |
 | `BASE_URL` | *(from request)* | Public address used in stream and playlist URLs. |
-| `ADMIN_PASSWORD` | *(none)* | Protects the web UI, its API and the MCP server with HTTP basic auth (any user name). Strongly recommended; see [Security](#security). The addon, live and playlist endpoints stay open because Stremio and IPTV apps can't log in. |
+| `ADMIN_PASSWORD` | *(none)* | Protects the web UI, its API and the MCP server with HTTP basic auth (any user name). Set one; see [Security](#security). The addon, live and playlist endpoints stay open because Stremio and IPTV apps can't log in. |
 | `DATA_DIR` | `/data` | SQLite database. |
-| `HLS_DIR` | `/tmp/basiccable-hls` | Live segments plus the read-ahead buffer. Put it on a tmpfs (RAM); see [Keeping segments in RAM](#keeping-segments-in-ram). |
+| `HLS_DIR` | `/tmp/basiccable-hls` | Live segments and the read-ahead buffer. Put it on a tmpfs (RAM); see [Keeping segments in RAM](#keeping-segments-in-ram). |
 | `READ_AHEAD_SECONDS` | `120` | How far ahead of real time each watched channel reads. `0` turns read-ahead off. |
-| `READ_AHEAD_MB` | `300` | Per-channel cap on the read-ahead buffer. It also never takes more than a quarter of the free space in `HLS_DIR`, so a 4K remux reads less far ahead. |
+| `READ_AHEAD_MB` | `300` | Per-channel cap on the read-ahead buffer. It also never uses more than a quarter of the free space in `HLS_DIR`, which limits how far ahead a 4K remux reads. |
 | `GUIDE_HOURS` | `48` | How far ahead the guide is planned. |
 | `IDLE_SECONDS` | `60` | How long a channel keeps running after its last viewer leaves. |
-| `TRUST_PROXY` | *(off)* | Set to `1` when Basic Cable sits behind your own reverse proxy, so viewer IPs are read from `X-Forwarded-For`. Without it, every viewer looks like the proxy. |
-| `SUBTITLE_BURN_PRESET` | `veryfast` | x264 preset used when burning in image subtitles. Faster presets use less CPU but give lower quality. |
+| `TRUST_PROXY` | *(off)* | Set to `1` behind your own reverse proxy to read viewer IPs from `X-Forwarded-For`. Otherwise every viewer appears to be the proxy. |
+| `SUBTITLE_BURN_PRESET` | `veryfast` | x264 preset for re-encoding (burned-in subtitles, the "Up next" box). Faster presets use less CPU and look worse. |
 
 ## Security
 
-- **Set `ADMIN_PASSWORD`.** Without it, anyone who can reach the port can change channels and settings and read your stream addon URLs, which usually contain your debrid key. Basic Cable logs a warning at startup when it listens on all interfaces without a password.
-- **Some endpoints are always open.** Stremio and IPTV apps can't log in, so the addon (`/manifest.json`, `/catalog`, `/meta`, `/stream`), the live streams (`/live`), `/direct`, `/playlist.m3u`, `/epg.xml` and channel art need no password. Anyone who can reach them can watch your channels, and so use your debrid account.
-- **Other websites can't use it.** The web UI's API and the MCP server refuse browser requests from pages Basic Cable didn't serve, so a site open in a browser on your network can't read or change anything. Behind a reverse proxy that rewrites the `Host` header, set **Public URL** (or `BASE_URL`), or `TRUST_PROXY=1` so `X-Forwarded-Host` is used.
-- **Keep it on your network.** If you do choose to expose Basic Cable to the internet, put it behind a reverse proxy that adds TLS and its own access control (an allow-list, a VPN such as Tailscale, or an authenticating proxy), and keep `ADMIN_PASSWORD` set.
-- **Logs are safe to share.** URLs in log lines keep only their host (`https://addon.example/…`), so addon URLs and debrid links don't end up in bug reports.
+- Set `ADMIN_PASSWORD`. Without it, anyone who can reach the port can change channels and settings and read your stream addon URLs, which usually contain your debrid key. Basic Cable logs a warning at startup when it listens on all interfaces with no password.
+- Some endpoints are always open, because Stremio and IPTV apps can't log in: the addon (`/manifest.json`, `/catalog`, `/meta`, `/stream`), the live streams (`/live`), `/direct`, `/playlist.m3u`, `/epg.xml` and channel art. Anyone who can reach them can watch your channels, using your debrid account.
+- The web UI's API and the MCP server refuse browser requests from pages Basic Cable didn't serve. Another website open in a browser on your network can't read or change anything. If a reverse proxy rewrites the `Host` header, set **Public URL** (or `BASE_URL`), or set `TRUST_PROXY=1` to use `X-Forwarded-Host`.
+- If you expose Basic Cable to the internet, put it behind a reverse proxy that adds TLS and its own access control (an allow-list, a VPN such as Tailscale, or an authenticating proxy), and keep `ADMIN_PASSWORD` set.
+- Log lines keep only the host of any URL (`https://addon.example/…`). Logs can be pasted into a bug report without leaking addon URLs or debrid links.
 
 ## Scheduling details
 
-- **The guide follows the stream.** A channel is planned from Cinemeta runtimes (one per-series value such as "21 min", rounded up per channel), but real files run shorter or longer than that. The guide is corrected as the real lengths become known, so it always shows what's actually on, at the minute, rather than neat :00/:30 times:
-  - About 10 minutes before a program airs, its file is prepared and its slot is set to the file's exact length (plus the commercial break, if the channel has one). Everything after it moves earlier or later to match. This happens whether or not anyone is watching.
-  - When a program ends and the next one starts at a different time than the guide says, that program and everything after it move to when it really started. A gap of a few seconds is left alone.
-  - Nothing is ever replayed: after a program, the channel only moves on to programs later in the guide.
-  - What plays, and in what order, never changes when the guide moves; only the times do. Long episodes get their full length: double-length premieres and finales, two-parters and extended cuts, up to three times the series' runtime or the runtime plus 90 minutes, whichever is more. Only a file that's clearly not one episode keeps its planned slot: under half the runtime (a bad length header) or past that limit (a whole season in one file). A program that starts before it was prepared ahead is sized to its file as it starts, so it isn't cut off either.
-- **Time slots stay put.** Moving the guide never shifts a weekly time slot: programs before it move, and the last one runs on to the slot's start. A program that would push into a slot makes the rest of the block replan instead.
-- **Slots win.** Auto-fill items never run into a slot. Leftover time at the end of a block goes to the previous item if it's under 10 minutes. Otherwise a fitting item from the pool fills it. An episode that has to be cut short airs again next time instead of being skipped.
-- **Episode memory** is per channel and per show, and is shared between the pool and slots. Specials (season 0) and unreleased episodes are skipped.
-- **No-repeat window.** The planner skips anything that aired, or is already planned, in full within the channel's window, counting both the history and the guide ahead. In-order shows skip past such an episode; random ones pick another. The window is measured from start time to start time. A guide planned before you change the window keeps its items until you rebuild it (editing the window rebuilds that channel's guide).
-  - **Checked again before airing.** The guide is planned two days ahead and then moves earlier as programs turn out shorter than planned, which can pull an episode a few hours inside the window. So when a program's stream is prepared, about 10 minutes before it airs, its real time is checked again. If it would now be a rerun, the channel's usual rules put something else in its place.
-  - **Small lineups rerun by design.** A channel with less programming than its window (11 films is about 25 hours, against a 3-day window) can't avoid reruns. It plays whatever aired longest ago, so everything comes round before anything repeats. The channel editor's Recently shown panel, and the MCP's `basiccable_recently_shown`, say when that's the case. Add titles or lower the window to change it.
-- Editing a channel replans everything after the program that's on now. What's airing keeps playing.
+A channel is planned from Cinemeta runtimes (one value per series, such as "21 min", rounded up per channel). Real files run shorter or longer, and the guide is corrected as their lengths become known. It shows what's actually on, to the minute, rather than neat :00 and :30 times:
+
+- About 10 minutes before a program airs, its file is prepared and its slot is set to the file's exact length, plus the commercial break if the channel has one. Everything after it moves to match. This happens whether or not anyone is watching.
+- When a program starts at a different time than the guide says, that program and everything after it move to the real start time. Differences of a few seconds are ignored.
+- Nothing is replayed: after a program ends, the channel only moves on to programs later in the guide.
+- Moving the guide changes times, never what plays or in what order. Long episodes get their full length: double-length premieres and finales, two-parters and extended cuts, up to three times the series' runtime or the runtime plus 90 minutes, whichever is more. A file that clearly isn't one episode keeps its planned slot: under half the runtime (a bad length header) or over that limit (a whole season in one file). A program that starts before it was prepared is sized to its file when it starts, so it isn't cut off either.
+
+Time slots:
+
+- Moving the guide never moves a weekly time slot. The programs before it move, and the last one runs up to the slot's start. If a program would run into a slot, the rest of that block is replanned.
+- Auto-fill programs never run into a slot. Leftover time at the end of a block goes to the previous program if it's under 10 minutes; otherwise something from the pool that fits fills it. An episode that has to be cut short airs again next time instead of being skipped.
+- Episode progress is kept per channel and per show, and shared between the pool and slots. Specials (season 0) and unreleased episodes are skipped.
+
+The no-repeat window:
+
+- The planner skips anything that aired in full, or is already planned, within the channel's window, counting both the history and the guide ahead. In-order shows move past such an episode; random ones pick another. The window runs from start time to start time. Editing the window rebuilds that channel's guide.
+- The guide is planned two days ahead and then moves earlier as programs turn out shorter than planned, which can pull an episode a few hours inside the window. To catch that, each program's real time is checked again when its stream is prepared, about 10 minutes before it airs. If it would now be a rerun, the channel's usual rules put something else in its place.
+- A channel with less programming than its window can't avoid reruns (11 films is about 25 hours, against a 3-day window). It plays whatever aired longest ago, and everything comes round before anything repeats. The channel editor's Recently shown panel, and the MCP tool `basiccable_recently_shown`, tell you when that's happening. Add titles or shorten the window to change it.
+
+Editing a channel replans everything after the program that's on now. The program on air keeps playing.
 
 ## Subtitles
 
@@ -119,9 +127,9 @@ When the file has embedded subtitles, Basic Cable picks one track per program:
 1. An English SDH track (flagged hearing-impaired, or titled SDH/CC), if there is one.
 2. Otherwise, the first English or unlabelled track.
 
-Forced-only tracks, which carry just the foreign-language lines, are skipped.
+Forced-only tracks, which only carry the foreign-language lines, are skipped.
 
-Many releases have no subtitles at all (small x265 WEBRips especially). When the best-ranked release that plays has none, Basic Cable probes up to two more releases ranked level with it (same resolution, HDR, preferred words, and cached on your debrid service) and uses the first one with a subtitle track tagged English (an unlabelled track doesn't count here). If none has one, the first release plays as it is.
+Many releases have no subtitles at all, small x265 WEBRips especially. When the best-ranked release that plays has none, Basic Cable probes up to two more releases ranked level with it (same resolution, HDR, preferred words, and cached on your debrid service) and uses the first one with a subtitle track tagged English. An unlabelled track doesn't count for this. If none of them has one, the first release plays without subtitles.
 
 How the track reaches the player depends on its format and the channel's **English subtitles** setting:
 
@@ -130,38 +138,38 @@ How the track reaches the player depends on its format and the channel's **Engli
 | Text (SRT, ASS, WebVTT) | Caption track, on by default | Caption track, on by default | None |
 | Image (Blu-ray PGS, DVD) | Burned into the video | Skipped; a text track is used if there is one | None |
 
-- **Caption tracks** cost almost nothing: ffmpeg turns them into WebVTT alongside the video. The channel's `index.m3u8` becomes an HLS master playlist with an "English" track marked default, and players can turn it off. It also declares that the video carries no closed captions, so ExoPlayer-based players (Stremio on Android TV) don't add an empty "Unknown" caption track. Captions embedded in the video itself (CEA-608) aren't offered.
-- **Burning in** means re-encoding the video with x264. Expect real 1080p content to keep a few CPU cores busy per channel. 4K sources are scaled to 1080p first. Lower `SUBTITLE_BURN_PRESET` (for example `superfast` or `ultrafast`) if a channel can't keep up. Set the channel to **Selectable track only** to never re-encode.
-- Subtitle files that sit next to the video in a torrent can't be used. Debrid links point at the video file alone.
-- Subtitles need ffmpeg 7.x. ffmpeg 8.0's real-time pacing slows to about half speed when a subtitle stream is included, so on 8.x Basic Cable plays without subtitles and logs a warning. The Docker image ships 7.1.
+- Caption tracks use almost no CPU: ffmpeg converts them to WebVTT alongside the video. The channel's `index.m3u8` becomes an HLS master playlist with an "English" track marked as default, which viewers can turn off. The playlist also declares that the video has no closed captions; otherwise ExoPlayer-based players (Stremio on Android TV) add an empty "Unknown" caption track. Captions embedded in the video stream itself (CEA-608) aren't offered.
+- Burning in means re-encoding the video with x264, which keeps a few CPU cores busy per channel for real 1080p content. 4K sources are scaled to 1080p first. If a channel can't keep up, lower `SUBTITLE_BURN_PRESET` (for example to `superfast` or `ultrafast`), or set the channel to **Selectable track only** so it never re-encodes.
+- Subtitle files next to the video in a torrent can't be used, because debrid links point at the video file alone.
+- Subtitles need ffmpeg 7.x. With a subtitle stream included, ffmpeg 8.0's real-time pacing drops to about half speed, so on 8.x Basic Cable plays without subtitles and logs a warning. The Docker image ships 7.1.
 
 ## Commercials
 
-The **Commercials** page holds your clip library. Clips are grouped into bundles, for example *2000s Kids*, *90s Saturday Morning* or *Adult Swim Bumps*. Create a bundle, then drop video files onto it (mp4, mkv, webm, mov, avi, ts, mpg…, up to 5 minutes each).
+The **Commercials** page holds your clip library, grouped into bundles such as *2000s Kids*, *90s Saturday Morning* or *Adult Swim Bumps*. Create a bundle, then drop video files onto it (mp4, mkv, webm, mov, avi, ts, mpg and others, up to 5 minutes each).
 
-Each clip is converted once, in the background, so it can be copied straight into a channel's stream without re-encoding at playback:
-- **Video:** H.264, at most 1080p, square pixels, and deinterlaced if it's an old TV rip.
-- **Audio:** stereo AAC with levelled loudness, so commercials aren't louder than the show. Clips without sound get a silent track.
+Each clip is converted once in the background and then copied straight into the stream at playback:
 
-Turn breaks on per channel in the channel editor's **Commercials** panel:
-- **How many:** off, or 1, 2 or 3 commercials per break.
-- **Which bundles:** tick the ones the channel should use. If none are ticked, it uses all of them.
+- Video: H.264, at most 1080p, square pixels, deinterlaced if it's an old TV rip.
+- Audio: stereo AAC with normalized loudness, so commercials aren't louder than the show. Clips without sound get a silent track.
 
-How breaks fit the live guide:
-- **Room in the guide.** Every program gets extra time for the break that follows it. That's commercials per break times the average clip length of the chosen bundles, rounded up with the program's slot length. For example, a 24-minute episode with two 1-minute spots gets a 30-minute slot instead of 25.
-- **Between programs only.** The break plays after a program ends and stops at the next program's scheduled start. If the clips picked come up short of the room set aside, the next program starts straight after them and the guide moves to match.
-- **Picking clips.** Clips are picked at random from the chosen bundles. Only clips that fit the time left are used, and the last dozen played on that channel are avoided.
-- **Breaks aren't guide items.** The guide, Recently shown and XMLTV only list programs. Tuning in during a break joins the break, and the next program follows.
+Breaks are set per channel in the channel editor's **Commercials** panel: how many clips per break (off, 1, 2 or 3), and which bundles to use. With no bundles ticked, the channel uses all of them.
 
-**Bundles as zip files:** **Export .zip** on a bundle downloads its original clips as one zip, ready to share or to import on another install. **Import bundle (.zip)** takes a zip of clips (mp4, mkv and the other formats above) and makes it a bundle named after the zip, or adds to the bundle named in the box. Folders inside the zip are flattened, so zipping a folder of clips works. Non-video files and macOS/Windows clutter are skipped, and the import lists what it left out. Clips already in the bundle aren't added twice, so re-importing the same zip is harmless. A zip with paths that climb out of its folder (`../`) is refused. Limits: 1 GB per clip (`COMMERCIAL_MAX_MB`) and 20 GB per zip (`COMMERCIAL_ZIP_MAX_MB`). The API equivalents are `GET /api/commercials/bundles/<name>/export` and `POST /api/commercials/import?name=<bundle>` with the zip as the request body.
+How breaks fit into the guide:
 
-**Bulk loading:** clips live under `commercials/<bundle>/` in the data volume. To load many at once, copy them into those folders (or bind-mount a host folder on `/data/commercials`) and press **Scan for new files**. Files deleted from a folder drop out of the library on the next scan.
+- Every program's slot includes time for the break after it: clips per break times the average clip length of the chosen bundles, rounded up with the program's slot length. A 24-minute episode with two 1-minute spots gets a 30-minute slot instead of 25.
+- A break plays after a program ends and stops at the next program's scheduled start. If the chosen clips are shorter than the time set aside, the next program starts right after them and the guide moves to match.
+- Clips are picked at random from the chosen bundles, among those that fit the time left, avoiding the last dozen played on that channel.
+- Breaks don't appear in the guide, Recently shown or XMLTV. Tuning in during a break joins the break, and the next program follows.
 
-**Backups and MCP:** backups keep each channel's commercial settings but not the clips, so copy the `commercials` folder separately if you move installs. Over MCP, `basiccable_list_commercials` shows the library, and `basiccable_update_channel` takes `commercials_per_break` and `commercial_bundles`.
+**Bundles as zip files.** **Export .zip** downloads a bundle's original clips as one zip, to share or to import on another install. **Import bundle (.zip)** turns a zip of clips into a bundle named after the zip, or adds them to the bundle named in the box. Folders inside the zip are flattened, so you can zip a whole folder of clips. Non-video files and macOS/Windows metadata files are skipped, and the import reports what it left out. Clips already in the bundle aren't added again, so importing the same zip twice does nothing new. A zip containing paths that climb out of its folder (`../`) is refused. Limits: 1 GB per clip (`COMMERCIAL_MAX_MB`) and 20 GB per zip (`COMMERCIAL_ZIP_MAX_MB`). The API equivalents are `GET /api/commercials/bundles/<name>/export` and `POST /api/commercials/import?name=<bundle>` with the zip as the request body.
+
+**Loading many clips.** Clips live under `commercials/<bundle>/` in the data volume. Copy files into those folders (or bind-mount a host folder on `/data/commercials`) and press **Scan for new files**. Files deleted from a folder drop out of the library on the next scan.
+
+**Backups and MCP.** Backups include each channel's commercial settings but not the clips, so copy the `commercials` folder yourself when moving installs. Over MCP, `basiccable_list_commercials` shows the library, and `basiccable_update_channel` takes `commercials_per_break` and `commercial_bundles`.
 
 ## Up next box
 
-Tick **Show "Up next" in the last minute** on a channel. During the last minute of each program, a semi-transparent box in the bottom-right corner of the picture lists the next program and the one after it, with their start times:
+With **Show "Up next" in the last minute** ticked on a channel, a semi-transparent box appears in the bottom-right corner of the picture for the last minute of each program. It lists the next program and the one after it, with their start times:
 
 ```
 UP NEXT · 8:30 PM
@@ -170,96 +178,89 @@ THEN · 9:00 PM
 The Office S04E01 · Fun Run
 ```
 
-The box is drawn into the video itself, so it shows on every player. That has a cost:
+The box is drawn into the video, and every player shows it. The trade-offs:
 
-- **That minute is re-encoded** (x264 at `SUBTITLE_BURN_PRESET`, at most 1080p). Expect one to two CPU cores busy for that minute per watched channel. The rest of the program is still copied as-is.
-- **A hand-over 60 seconds before the end.** The copied part stops there and the re-encoded part takes over, the same way playback resumes after a dropped link. Most players carry straight on; some show a brief stutter.
-- **HDR programs get no box**, since re-encoding them would flatten their colours.
-- The box shows the guide as it stands when the last minute starts. Programs that are re-encoded anyway (image subtitles, sparse keyframes) get the box with no extra hand-over.
+- The last minute is re-encoded with x264 (at `SUBTITLE_BURN_PRESET`, at most 1080p), which takes one to two CPU cores per watched channel for that minute. The rest of the program is still copied.
+- 60 seconds before the end, the copied stream stops and the re-encoded one takes over, the same way playback resumes after a dropped link. Most players carry on without a pause; some stutter briefly.
+- HDR programs get no box, since re-encoding them would flatten their colours.
+- The box shows the guide as it is when the last minute starts. Programs that are already being re-encoded (burned-in subtitles, sparse keyframes) get the box without the extra hand-over.
 
 ## Backup and restore
 
-**Settings → Backup & restore** downloads a `basiccable-backup-<date>.json` file. It holds:
+**Settings → Backup & restore** downloads a `basiccable-backup-<date>.json` file containing:
 
-- Every channel and its options.
-- The auto-fill pool, including wildcards and any matches you unticked.
-- Time slots.
-- Where each show has got to.
+- every channel and its options,
+- the auto-fill pools, including wildcards and any matches you unticked,
+- time slots,
+- each show's progress.
 
 Settings are left out unless you tick **Include settings**, because they contain your debrid addon URLs and keys.
 
-To restore, choose the file on another install (or the same one) and click **Import**:
+To restore, choose the file on another install (or the same one) and click **Import**. Imported channels are added alongside the existing ones; a channel whose number is taken gets the next free number. **Replace existing channels** deletes the current channels first, and **Also restore settings from the file** applies the backup's settings if it has them.
 
-- **Imported channels are added** next to existing ones. If a channel number is already in use, the channel gets the next free number.
-- **Replace existing channels** deletes the current channels first.
-- **Also restore settings from the file** applies the settings, if the backup has them.
+Guides are rebuilt in the background after an import. A file with problems is rejected before anything changes, with a message naming the channel at fault.
 
-Guides are rebuilt in the background after an import. A bad file is rejected before anything changes, with a message naming the channel at fault.
-
-The same thing is available from the API: `GET /api/backup` (add `?settings=1` to include settings) and `POST /api/restore` with `{"backup": <file contents>, "replace": false, "includeSettings": false}`.
+From the API: `GET /api/backup` (add `?settings=1` to include settings) and `POST /api/restore` with `{"backup": <file contents>, "replace": false, "includeSettings": false}`.
 
 ## Keeping segments in RAM
 
-Each watched channel keeps its read-ahead buffer and the last minute of published video in `HLS_DIR`. At 1080p that's around 250 MB per channel; a 4K remux can take about 1 GB. The data is rewritten constantly, so RAM is the right place for it.
+Each watched channel keeps its read-ahead buffer and its last minute of published video in `HLS_DIR`: around 250 MB per channel at 1080p, and up to about 1 GB for a 4K remux. This data is rewritten constantly, so keep it in RAM:
 
-- **docker compose:** the included `docker-compose.yml` mounts a 2 GB tmpfs at `/tmp/basiccable-hls`, the default `HLS_DIR`. Don't set `HLS_DIR` yourself.
-- **docker run:** add `--tmpfs /tmp/basiccable-hls:size=2g`.
-- **Portainer, single container:** Portainer's container form has no tmpfs option, but every container has a RAM-backed `/dev/shm`. Under **Advanced container settings → Runtime & Resources**, set **Shared memory size** to 2048 MB. Then set the environment variable `HLS_DIR=/dev/shm/basiccable-hls`.
-- **Portainer, as a stack:** paste the compose file under **Stacks → Add stack** and you get the tmpfs mount as-is.
+- docker compose: the included `docker-compose.yml` mounts a 2 GB tmpfs at `/tmp/basiccable-hls`, the default `HLS_DIR`. Leave `HLS_DIR` unset.
+- docker run: add `--tmpfs /tmp/basiccable-hls:size=2g`.
+- Portainer, single container: the container form has no tmpfs option, but every container has a RAM-backed `/dev/shm`. Under **Advanced container settings → Runtime & Resources**, set **Shared memory size** to 2048 MB, then set the environment variable `HLS_DIR=/dev/shm/basiccable-hls`.
+- Portainer stack: paste the compose file under **Stacks → Add stack** to get the tmpfs mount.
 
-Size it for the channels you'll watch at once. Too small isn't fatal: the read-ahead shrinks when space runs low.
+Size it for the number of channels you'll watch at once. If it fills up, the read-ahead shrinks rather than failing.
 
 ## Fast tune-in
 
-Without help, opening a channel waits for every stream addon to answer, then checks the chosen file. With slow addons that adds several seconds. So once a minute Basic Cable prepares, on every enabled channel, whatever is on now and whatever starts in the next **Prepare streams ahead** minutes (Settings, default 10):
+Opening a channel would otherwise wait for every stream addon to answer and then check the chosen file, which can take several seconds with slow addons. To avoid that, once a minute Basic Cable prepares the current program and anything starting within the next **Prepare streams ahead** minutes (Settings, default 10) on every enabled channel:
 
 1. It asks the addons for streams and ranks them.
-2. It checks the top file is reachable and real (not a debrid "downloading" placeholder).
+2. It checks that the top file is reachable and real, not a debrid "downloading" placeholder.
 3. It keeps that choice for up to 2 hours.
 
-Opening a channel then starts ffmpeg straight away. The log line for the program says `stream was prepared ahead`. In testing with addons that took 5 seconds to answer, tune-in dropped from 6.2s to 1.0s.
+Opening the channel then starts ffmpeg right away, and the program's log line says `stream was prepared ahead`. In testing with addons that took 5 seconds to answer, tune-in went from 6.2 s to 1.0 s.
 
-Preparing also reveals the file's real length, and the program's guide slot is set to it exactly, shorter or longer. A Superfan episode gets its full extended length instead of being cut off, and a 21-minute file in a 25-minute slot gives the next program those 4 minutes. Only programs that haven't started yet are changed. See [Scheduling details](#scheduling-details).
+Preparing a stream also reveals the file's real length, and the program's guide slot is set to match it. A Superfan episode gets its full extended length instead of being cut off, and a 21-minute file in a 25-minute slot hands the extra 4 minutes to the next program. Only programs that haven't started are changed. See [Scheduling details](#scheduling-details).
 
 ### Episodes with nothing playable
 
-Sometimes no addon has a usable copy: every result is uncached, torrent-only or filtered out. When that happens, Basic Cable puts something else in that spot, chosen by the channel's usual rules:
+Sometimes no addon has a usable copy: every result is uncached, torrent-only or filtered out. Basic Cable then puts something else in that spot by the channel's usual rules. In-order channels play the next episode and continue the show from there, random channels pick another random episode, and pools with several titles may move on to a different show.
 
-- **In-order channels** play the next episode, and the show continues from there.
-- **Random channels** pick another random episode.
-- **Pools with several titles** may move on to a different show.
+An upcoming program is replaced before it airs. A program already on air is cut off and the replacement starts immediately. The replacement is checked right away as well, and a run of missing episodes is skipped in one go. Tuning in does the same, even with preparing turned off, so you get the next playable episode instead of a "couldn't play" screen.
 
-An upcoming program is swapped before it airs. One already on air is cut off and the replacement starts straight away. The replacement is checked immediately too, so a run of missing episodes is skipped in one go. Tuning in does the same, even with prefetching off, so you get the next playable episode instead of a "couldn't play" screen.
+A skipped episode isn't scheduled again for 6 hours. After that it gets another chance, since debrid caches change.
 
-A skipped episode isn't scheduled again for 6 hours, after which it gets another chance, since debrid caches change.
+In these cases Basic Cable treats the problem as an outage, skips nothing, and tries again later:
 
-Outages aren't mistaken for missing episodes. Basic Cable skips nothing and retries later in these cases:
-- **No addon answers at all.**
-- **An addon fails and the others have nothing usable.** "Fails" includes answering with only a notice, such as a rate-limit message in place of real streams.
-- **Everything on the channel failed recently.** The channel keeps its guide and keeps retrying instead of skipping through its whole lineup, so it never ends up with nothing on.
+- no addon answers at all;
+- an addon fails (including answering with only a notice, such as a rate-limit message) and the others have nothing usable;
+- everything on the channel failed recently. The channel keeps its guide and retries rather than skipping through its whole lineup.
 
-Only a program that hasn't started yet is checked ahead of time. One already on air is never re-checked and cut off by the prefetcher.
+Only programs that haven't started are checked ahead of time; a program on air is never cut off by this check.
 
-Lookups are spaced 3–30 seconds apart at random, so a batch of channels never hits your addons all at once and trips their rate limits. Tuning in never waits for this spacing. If a program isn't prepared yet, opening it looks it up immediately.
+Lookups are spaced 3–30 seconds apart at random to keep a batch of channels from hitting your addons all at once and tripping their rate limits. Tuning in doesn't wait for this: a program that isn't prepared yet is looked up immediately.
 
-The cost is one addon lookup and one file check per program, made even when nobody is watching. Set **Prepare streams ahead** to 0 to turn it off.
+Preparing costs one addon lookup and one file check per program, even when nobody is watching. Set **Prepare streams ahead** to 0 to turn it off.
 
 ## Stream cap
 
 With **One stream per viewer IP** on (Settings, on by default), each device watches one channel at a time:
 
-- Opening a channel releases the one that device was watching before.
-- If nobody else is on that old channel, it stops straight away, along with its ffmpeg process and debrid connection. Otherwise it would keep running for a minute after you leave.
-- If an old player keeps asking for the channel you left, it gets an error instead of restarting it.
-- Other devices are unaffected. Two TVs can watch two channels, or the same one.
+- Opening a channel releases the one that device was watching.
+- If nobody else is watching that channel, it stops immediately, along with its ffmpeg process and debrid connection, instead of running for another minute.
+- A player that keeps requesting the channel you left gets an error instead of restarting it.
+- Other devices aren't affected: two TVs can watch two channels, or the same one.
 
-The cap covers the live channel streams. **Start over** links go straight to your debrid service, so Basic Cable doesn't see them.
+The cap only covers live channel streams. **Start over** links go straight to your debrid service and never pass through Basic Cable.
 
-If Basic Cable is behind a reverse proxy, set `TRUST_PROXY=1`. Otherwise every viewer shares the proxy's IP and counts as one device.
+Behind a reverse proxy, set `TRUST_PROXY=1`. Otherwise every viewer shares the proxy's IP and counts as one device.
 
 ## MCP server
 
-Basic Cable includes an [MCP](https://modelcontextprotocol.io) server at `/mcp` (Streamable HTTP). With it, an assistant such as Claude Code can manage everything from plain-language requests:
+Basic Cable has an [MCP](https://modelcontextprotocol.io) server at `/mcp` (Streamable HTTP). An assistant such as Claude Code can manage it from requests like these:
 
 > Make a channel called Saturday Cartoons with Animaniacs, Pinky and the Brain and Batman: The Animated Series, 720p, and put Pokémon on Saturdays 8 to 10am.
 >
@@ -269,13 +270,13 @@ Basic Cable includes an [MCP](https://modelcontextprotocol.io) server at `/mcp` 
 >
 > Skip whatever's on Adult Swim.
 
-**Connect Claude Code:**
+To connect Claude Code:
 
 ```bash
 claude mcp add --transport http basiccable http://<server>:7000/mcp
 ```
 
-If you set `ADMIN_PASSWORD`, add `--header "Authorization: Bearer <password>"` (Basic auth works too). This repo's `.mcp.json` registers the server for Claude Code sessions opened here. It reads the address from `BASICCABLE_MCP_URL` and the password from `BASICCABLE_TOKEN` if they're set.
+If you set `ADMIN_PASSWORD`, add `--header "Authorization: Bearer <password>"` (Basic auth works too). This repo's `.mcp.json` registers the server for Claude Code sessions opened in the repo, reading the address from `BASICCABLE_MCP_URL` and the password from `BASICCABLE_TOKEN` if they're set.
 
 | Area | Tools |
 |---|---|
@@ -287,14 +288,14 @@ If you set `ADMIN_PASSWORD`, add `--header "Authorization: Bearer <password>"` (
 | Addons & settings | `basiccable_get_settings` (addon keys hidden unless asked), `basiccable_add_stream_addon`, `basiccable_remove_stream_addon`, `basiccable_test_stream_addons`, `basiccable_update_settings` |
 | Backups | `basiccable_export_backup`, `basiccable_import_backup` |
 
-The tools take things the way people say them:
+The tools accept:
 
-- **Channels:** a number or a name ("4", "adult swim").
-- **Titles:** a name, optionally with `movie:` / `show:` or a year ("Heat (1995)"), an IMDb id, or a wildcard ("Star Trek*").
-- **Days:** "weeknights", "mon-fri", "sat, sun".
-- **Times and lengths:** "8pm", "20:00", "1h30m".
+- channels by number or name ("4", "adult swim");
+- titles by name, optionally with `movie:` / `show:` or a year ("Heat (1995)"), by IMDb id, or as a wildcard ("Star Trek*");
+- days like "weeknights", "mon-fri", "sat, sun";
+- times and lengths like "8pm", "20:00", "1h30m".
 
-Every change reports exactly what each title matched, along with the runner-up matches. A name with no close match is refused with suggestions instead of being guessed. Browser requests from other websites are rejected.
+Every change reports what each title matched, along with the closest alternatives. A name with no close match is refused with suggestions rather than guessed. Browser requests from other websites are rejected.
 
 ## Outputs
 
@@ -305,13 +306,13 @@ Every change reports exactly what each title matched, along with the runner-up m
 | `/epg.xml` | XMLTV guide |
 | `/live/<channel>/index.m3u8` | A channel's live stream |
 
-The Stremio stream list also offers **Start over**, which redirects straight to the debrid link for the current program from the beginning. Use it if a player struggles with the live HLS stream.
+The Stremio stream list also has a **Start over** entry, which redirects to the debrid link for the current program, from the beginning. Use it if a player has trouble with the live HLS stream.
 
-## Limits worth knowing
+## Known limitations
 
-- Video is copied as-is to keep CPU use near zero (except when burning in image subtitles). The device you watch on has to decode whatever the release uses, such as HEVC or 10-bit. To avoid a codec, add it to the channel's skip list, for example `HEVC, x265`.
-- Joining mid-program starts at the nearest keyframe before the offset, usually within a couple of seconds.
-- Uncached torrents are ignored, because live TV can't wait for a download. Keep a few addons configured to get the best cache coverage.
+- Video is copied as-is to keep CPU use near zero, except where noted above (burned-in subtitles, sparse keyframes, the "Up next" box). The device you watch on has to decode whatever the release uses, such as HEVC or 10-bit. To avoid a codec, add it to the channel's skip words, for example `HEVC, x265`.
+- Joining mid-program starts at the nearest keyframe before the scheduled position, usually within a couple of seconds.
+- Uncached torrents are ignored, since live TV can't wait for a download. Configuring several addons gives the best cache coverage.
 
 ## Development
 
@@ -329,15 +330,15 @@ SAMPLE_FILE=/path/to/video.mkv node test/mock-addon.js   # MOCK_DELAY_MS=5000 ma
 
 Then add `http://localhost:7099/manifest.json` as a stream addon.
 
-`test/mcp-smoke.js` drives every MCP tool against a running server. It creates a test channel and deletes it again, and needs internet access for Cinemeta:
+`test/mcp-smoke.js` runs every MCP tool against a running server. It creates a test channel, deletes it afterwards, and needs internet access for Cinemeta:
 
 ```bash
 MCP_URL=http://localhost:7000/mcp ADDON_URL=http://localhost:7099/manifest.json node test/mcp-smoke.js
 ```
 
-Requires Node 22.13 or newer (it uses the built-in `node:sqlite`) and ffmpeg 6.1 or newer on the PATH (older versions work but take longer to tune in). Use ffmpeg 7.x if you want subtitles; see [Subtitles](#subtitles).
+Requires Node 22.13 or newer (for the built-in `node:sqlite`) and ffmpeg 6.1 or newer on the PATH. Older ffmpeg versions work but tune in more slowly. For subtitles, use ffmpeg 7.x; see [Subtitles](#subtitles).
 
-GitHub Actions runs the tests on every push and pull request (`.github/workflows/test.yml`). `.forgejo/workflows/docker-build-push.yml` is an example deploy pipeline for a self-hosted Forgejo: it tests, builds the image, scans it with Trivy (a fixable CRITICAL finding blocks the push) and pushes `:<short sha>` and `:latest` to the registry named by the `REGISTRY` repository variable.
+GitHub Actions runs the tests on every push and pull request (`.github/workflows/test.yml`). `.forgejo/workflows/docker-build-push.yml` is an example deploy pipeline for a self-hosted Forgejo. It runs the tests, builds the image, scans it with Trivy (a fixable CRITICAL finding blocks the push) and pushes `:<short sha>` and `:latest` to the registry set in the `REGISTRY` repository variable.
 
 ## Disclaimer
 
