@@ -324,4 +324,4 @@ Basic Cable does not host, index, provide or distribute media files of any kind.
 
 ## License
 
-[MIT](LICENSE)
+[Mozilla Public License 2.0](LICENSE), with the Commons Clause: you can use, change and share Basic Cable, but not sell it or paid services built mainly on it. Created by **TitleOS**.
