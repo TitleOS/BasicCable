@@ -2,7 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, log } from './config.js';
-import { Router, send, serveStatic, checkAuth, clientIp, HttpError } from './http.js';
+import { Router, send, serveStatic, checkAuth, clientIp, sameOrigin, HttpError } from './http.js';
 import { registerAddon } from './addon.js';
 import { registerApi } from './api.js';
 import { startScheduler } from './scheduler.js';
@@ -35,16 +35,19 @@ const server = http.createServer(async (req, res) => {
     if (res.statusCode >= 400) log.warn(line);
     else log.info(line);
   });
+  // The admin API and MCP hold debrid keys and can change everything: only pages StreamTube served itself may
+  // call them from a browser, so another website open on the same network can't read or drive them. Everything
+  // else (the Stremio addon, live streams, playlists, art) is open to any origin, as Stremio Web and web
+  // players need.
+  const admin = pathname === '/mcp' || pathname.startsWith('/api/');
+  if (admin && !sameOrigin(req)) return send(res, 403, { error: 'Origin not allowed' });
+  if (!admin) {
+    res.setHeader('access-control-allow-origin', '*');
+    res.setHeader('access-control-allow-headers', '*');
+  }
   if (pathname === '/mcp') {
     // MCP endpoint for assistants (Claude Code etc.). Same password as the web UI when one is set.
     if (!checkAuth(req)) return send(res, 401, { error: 'Authentication required' }, { 'www-authenticate': 'Basic realm="StreamTube"' });
-    // Browsers send Origin: only pages served by StreamTube itself may call it, so another website can't drive it.
-    const origin = req.headers.origin;
-    if (origin) {
-      let sameOrigin = false;
-      try { sameOrigin = new URL(origin).host === req.headers.host; } catch { /* unparseable */ }
-      if (!sameOrigin) return send(res, 403, { error: 'Origin not allowed' });
-    }
     return mcpHandler(req, res);
   }
   if (req.method === 'OPTIONS') return send(res, 204, '');
@@ -76,6 +79,12 @@ const server = http.createServer(async (req, res) => {
 server.listen(config.port, config.host, async () => {
   const caps = await ffmpegCaps();
   log.info(`StreamTube listening on http://${config.host}:${config.port}`);
+  if (['0.0.0.0', '::', ''].includes(config.host) && !config.adminPassword) {
+    log.warn('Listening on all network interfaces with no ADMIN_PASSWORD: anyone who can reach this port can change ' +
+      'channels and settings, including your stream addon URLs. Set ADMIN_PASSWORD. The Stremio addon and live ' +
+      'streams stay open by design, so if you expose StreamTube to the internet, put it behind a reverse proxy ' +
+      'that adds TLS and access control.');
+  }
   log.info(`Data dir: ${config.dataDir} · timezone ${config.timezone}`);
   if (!caps.ok) log.error(`ffmpeg not found (${caps.error}); live playback will not work`);
   else log.info(`ffmpeg ${caps.version}${caps.burst ? '' : ' (no initial burst support, tuning in will be slower)'}`);

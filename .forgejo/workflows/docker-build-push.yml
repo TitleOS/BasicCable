@@ -1,11 +1,11 @@
-# Tests StreamTube, builds its Docker image on every push to main, scans it with Trivy, then pushes it to the
-# private registry at 10.0.1.13:5000 (Gray Goo) as :<short sha> and :latest. No registry auth required.
+# Forgejo deploy pipeline: tests StreamTube, builds its Docker image on every push to main, scans it with Trivy,
+# then pushes it to a private registry as :<short sha> and :latest. Set the repository variable REGISTRY to the
+# registry's host:port (no registry auth is used).
 #
 # Failing tests stop the build. Trivy gates the push: any CRITICAL vulnerability with a known fix fails the job
 # before the image reaches the registry. HIGH findings are reported but don't block.
 #
-# runs-on: docker matches Drydock's runner label: jobs run directly on Drydock against its native dockerd,
-# no DinD sidecar involved.
+# runs-on: docker expects a runner with that label and access to a native dockerd (no DinD sidecar).
 
 name: Build, Scan, and Push Docker Image
 
@@ -14,6 +14,9 @@ on:
     branches:
       - main
   workflow_dispatch: {}
+
+env:
+  REGISTRY: ${{ vars.REGISTRY || '10.0.1.13:5000' }}
 
 jobs:
   build-scan-push:
@@ -34,8 +37,8 @@ jobs:
       - name: Build image
         run: |
           DOCKER_BUILDKIT=1 docker build \
-            -t 10.0.1.13:5000/streamtube:${{ steps.vars.outputs.sha_short }} \
-            -t 10.0.1.13:5000/streamtube:latest \
+            -t ${{ env.REGISTRY }}/streamtube:${{ steps.vars.outputs.sha_short }} \
+            -t ${{ env.REGISTRY }}/streamtube:latest \
             .
 
       - name: Scan image with Trivy
@@ -47,9 +50,9 @@ jobs:
             --severity CRITICAL \
             --ignore-unfixed \
             --exit-code 1 \
-            10.0.1.13:5000/streamtube:${{ steps.vars.outputs.sha_short }}
+            ${{ env.REGISTRY }}/streamtube:${{ steps.vars.outputs.sha_short }}
 
       - name: Push image
         run: |
-          docker push 10.0.1.13:5000/streamtube:${{ steps.vars.outputs.sha_short }}
-          docker push 10.0.1.13:5000/streamtube:latest
+          docker push ${{ env.REGISTRY }}/streamtube:${{ steps.vars.outputs.sha_short }}
+          docker push ${{ env.REGISTRY }}/streamtube:latest

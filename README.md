@@ -1,6 +1,8 @@
 # StreamTube
 
-Virtual live TV channels for Stremio, built from any show or movie Stremio can find and played through your debrid service.
+Virtual live TV channels for Stremio, built from any show or movie Stremio can find and played through the Stremio stream addons you've configured with your debrid service.
+
+StreamTube doesn't provide any media itself; see the [disclaimer](#disclaimer).
 
 You build channels in a web UI that runs in a container on your network. Each channel has a guide that runs on the real clock. When you open a channel in Stremio, StreamTube finds a cached debrid stream for whatever is on and joins it at the current point. If *Modern Family* started 10 minutes ago, you start 10 minutes in.
 
@@ -9,7 +11,7 @@ You build channels in a web UI that runs in a container on your network. Each ch
 - **Wildcards.** `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. You can untick any match. New titles that match are picked up each day.
 - **English subtitles.** StreamTube looks for an English SDH track in the file, then the first English or unlabelled one. Text subtitles become a selectable caption track. Image subtitles (Blu-ray PGS) are burned into the picture. See [Subtitles](#subtitles).
 - **Target resolution per channel.** The picker uses the exact resolution when it can. Otherwise it takes the next best: by default the nearest lower one, or optionally the nearest higher one. It only uses cached, direct debrid links, and it skips CAM, telesync and TVSYNC releases, Dolby Vision-only files (optional) and any keywords you list.
-- **The right show.** Addons sometimes answer one show's id with a sibling's files (Comet hands out *Star Wars: The Clone Wars* episodes for the 2003 *Star Wars: Clone Wars*). StreamTube reads the title off each release's file name and drops a release that names a different show or movie it plays on any channel. Namesakes (*Doctor Who* 2005 and 2023) are told apart by the year in the release name. Releases whose names it can't read, or that name something it doesn't play, are kept.
+- **The right show.** Addons sometimes answer one show's id with a sibling's files (for example *Star Wars: The Clone Wars* episodes for the 2003 *Star Wars: Clone Wars*). StreamTube reads the title off each release's file name and drops a release that names a different show or movie it plays on any channel. Namesakes (*Doctor Who* 2005 and 2023) are told apart by the year in the release name. Releases whose names it can't read, or that name something it doesn't play, are kept.
 - **Preferred and blocked releases.** Releases whose names contain a preferred word win over everything else, resolution included. The default is `Superfan`, so The Office plays its extended Superfan episodes when an addon has them. Blocked words (Settings, whole words, every channel) rule a release out entirely. The default blocks `YIFY` and `YTS`, whose small re-encodes look soft on a big screen.
 - **HDR.** Tick *Prefer HDR* on a channel to pick HDR10, HDR10+ or HLG over SDR, and *Prefer HDR10* to pick HDR10/HDR10+ first. Either one only reorders releases at the resolution the picker settled on; it never trades resolution for HDR. While *Avoid Dolby Vision-only releases* is ticked, a Dolby Vision file without an HDR10 layer doesn't count as HDR.
 - **No reruns too soon.** Everything that airs is recorded in a per-channel *Recently shown* history (kept 90 days, shown in the channel editor). A channel won't air the same episode or movie again within its *Don't repeat within* window, 3 days by default: if S02E03 aired Monday at 10 AM, it can't come back before Thursday 10 AM. If every choice is a repeat (a small pool), the one shown longest ago plays instead of dead air. Episodes cut short don't count.
@@ -27,7 +29,7 @@ You build channels in a web UI that runs in a container on your network. Each ch
 Stremio ──/stream/tv/streamtube:3──▶ StreamTube ──▶ live HLS URL for channel 3
 Stremio ──/live/3/index.m3u8───────▶ StreamTube
                                        │ guide says: Modern Family S01E05, 10:00 in
-                                       │ ask your debrid addons (Torrentio/Comet/…)
+                                       │ ask your Stremio stream addons
                                        │ rank: cached + direct link + target resolution
                                        ▼
                          ffmpeg -ss 600 -readrate 1 -i <debrid link> -c:v copy → HLS
@@ -55,7 +57,7 @@ docker compose up -d --build
 
 Open `http://<server-ip>:7000` from any device on your network.
 
-1. **Settings → Debrid stream addons.** Paste the manifest URL of each stream addon you've set up with your debrid service, one per line. For example, Torrentio configured for Real-Debrid gives a URL like `https://torrentio.strem.fun/realdebrid=YOURKEY/manifest.json`. Comet, MediaFusion, AIOStreams, Jackettio and the TorBox addon also work. Your debrid key is already inside that URL. Click **Test addons** to confirm it returns cached links.
+1. **Settings → Debrid stream addons.** Paste the manifest URL of each Stremio stream addon you've set up with your debrid service, one per line. Most such addons put your debrid key inside the manifest URL when you configure them, so treat these URLs like passwords. Click **Test addons** to confirm each one returns cached links.
 2. **Channels → New channel.** Name it, pick a target resolution, then add shows or movies to the auto-fill pool, or add a wildcard. Add time slots if you want fixed programming.
 3. **Connect.** Copy the manifest URL, then in Stremio go to **Addons**, paste it into the search box and click **Install**. The one-click install button only appears for https addresses, because Stremio treats `stremio://` links as https. The channels show up under **Discover → TV → StreamTube**.
 
@@ -69,10 +71,10 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 
 | Variable | Default | |
 |---|---|---|
-| `TZ` | system | Timezone for the guide and time slots. You can also change it in Settings. |
+| `TZ` | `UTC` in the compose file, otherwise the system's | Timezone for the guide and time slots, as an IANA name such as `America/New_York` or `Europe/London`. Set it to your own: with UTC, a "weeknights 8 PM" slot airs at 8 PM UTC. You can also change it in Settings. |
 | `PORT` | `7000` | |
 | `BASE_URL` | *(from request)* | Public address used in stream and playlist URLs. |
-| `ADMIN_PASSWORD` | *(none)* | Protects the web UI and API with HTTP basic auth (any user name). The addon, live and playlist endpoints stay open because Stremio and IPTV apps can't log in. |
+| `ADMIN_PASSWORD` | *(none)* | Protects the web UI, its API and the MCP server with HTTP basic auth (any user name). Strongly recommended; see [Security](#security). The addon, live and playlist endpoints stay open because Stremio and IPTV apps can't log in. |
 | `DATA_DIR` | `/data` | SQLite database. |
 | `HLS_DIR` | `/tmp/streamtube-hls` | Live segments plus the read-ahead buffer. Put it on a tmpfs (RAM); see [Keeping segments in RAM](#keeping-segments-in-ram). |
 | `READ_AHEAD_SECONDS` | `120` | How far ahead of real time each watched channel reads. `0` turns read-ahead off. |
@@ -81,6 +83,14 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 | `IDLE_SECONDS` | `60` | How long a channel keeps running after its last viewer leaves. |
 | `TRUST_PROXY` | *(off)* | Set to `1` when StreamTube sits behind your own reverse proxy, so viewer IPs are read from `X-Forwarded-For`. Without it, every viewer looks like the proxy. |
 | `SUBTITLE_BURN_PRESET` | `veryfast` | x264 preset used when burning in image subtitles. Faster presets use less CPU but give lower quality. |
+
+## Security
+
+- **Set `ADMIN_PASSWORD`.** Without it, anyone who can reach the port can change channels and settings and read your stream addon URLs, which usually contain your debrid key. StreamTube logs a warning at startup when it listens on all interfaces without a password.
+- **Some endpoints are always open.** Stremio and IPTV apps can't log in, so the addon (`/manifest.json`, `/catalog`, `/meta`, `/stream`), the live streams (`/live`), `/direct`, `/playlist.m3u`, `/epg.xml` and channel art need no password. Anyone who can reach them can watch your channels, and so use your debrid account.
+- **Other websites can't use it.** The web UI's API and the MCP server refuse browser requests from pages StreamTube didn't serve, so a site open in a browser on your network can't read or change anything. Behind a reverse proxy that rewrites the `Host` header, set **Public URL** (or `BASE_URL`), or `TRUST_PROXY=1` so `X-Forwarded-Host` is used.
+- **Keep it on your network.** If you do choose to expose StreamTube to the internet, put it behind a reverse proxy that adds TLS and its own access control (an allow-list, a VPN such as Tailscale, or an authenticating proxy), and keep `ADMIN_PASSWORD` set.
+- **Logs are safe to share.** URLs in log lines keep only their host (`https://addon.example/…`), so addon URLs and debrid links don't end up in bug reports.
 
 ## Scheduling details
 
@@ -202,7 +212,7 @@ A skipped episode isn't scheduled again for 6 hours, after which it gets another
 
 Outages aren't mistaken for missing episodes. StreamTube skips nothing and retries later in these cases:
 - **No addon answers at all.**
-- **An addon fails and the others have nothing usable.** "Fails" includes answering with only a notice, such as Torrentio's rate-limit message in place of real streams.
+- **An addon fails and the others have nothing usable.** "Fails" includes answering with only a notice, such as a rate-limit message in place of real streams.
 - **Everything on the channel failed recently.** The channel keeps its guide and keeps retrying instead of skipping through its whole lineup, so it never ends up with nothing on.
 
 Only a program that hasn't started yet is checked ahead of time. One already on air is never re-checked and cut off by the prefetcher.
@@ -304,4 +314,12 @@ MCP_URL=http://localhost:7000/mcp ADDON_URL=http://localhost:7099/manifest.json 
 
 Requires Node 22.13 or newer (it uses the built-in `node:sqlite`) and ffmpeg 6.1 or newer on the PATH (older versions work but take longer to tune in). Use ffmpeg 7.x if you want subtitles; see [Subtitles](#subtitles).
 
-Every push to `main` on Forgejo runs `.forgejo/workflows/docker-build-push.yml` on the Drydock runner. It runs the tests, builds the image, scans it with Trivy (a fixable CRITICAL finding blocks the push), and pushes `10.0.1.13:5000/streamtube:<short sha>` and `:latest`. To roll out a commit, redeploy the container so it pulls `:latest`.
+GitHub Actions runs the tests on every push and pull request (`.github/workflows/test.yml`). `.forgejo/workflows/docker-build-push.yml` is an example deploy pipeline for a self-hosted Forgejo: it tests, builds the image, scans it with Trivy (a fixable CRITICAL finding blocks the push) and pushes `:<short sha>` and `:latest` to the registry named by the `REGISTRY` repository variable.
+
+## Disclaimer
+
+StreamTube does not host, index, provide or distribute media files of any kind. It schedules and plays whatever the Stremio stream addons and services you configure return. You are responsible for which addons and services you use and how you use them, and for having the rights to stream the files they provide. StreamTube is not affiliated with Stremio or any addon or debrid service.
+
+## License
+
+[MIT](LICENSE)

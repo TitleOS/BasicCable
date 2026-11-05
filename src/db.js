@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.js';
 
 const DEFAULT_SETTINGS = {
-  // Stremio stream addons configured with your debrid service (Torrentio, Comet, MediaFusion, AIOStreams...).
+  // Stremio stream addons configured with your debrid service.
   // Paste the manifest URL you installed in Stremio; the debrid key is part of that URL.
   streamAddons: [],
   // Stremio metadata addon used for search, episode lists and runtimes.

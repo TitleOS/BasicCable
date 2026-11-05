@@ -668,7 +668,7 @@ function bundlePanel(b) {
 
 async function viewSettings() {
   const s = await api('/api/settings');
-  const addons = h('textarea', { placeholder: 'https://torrentio.strem.fun/realdebrid=YOUR_KEY/manifest.json' }, (s.streamAddons || []).join('\n'));
+  const addons = h('textarea', { placeholder: 'https://addon.example/your-debrid-config/manifest.json' }, (s.streamAddons || []).join('\n'));
   const meta = h('input', { type: 'url', value: s.metaAddon, style: { width: '100%' } });
   const tz = h('input', { type: 'text', value: s.timezone, list: 'tzlist' });
   const tzlist = h('datalist', { id: 'tzlist' }, (Intl.supportedValuesOf?.('timeZone') || []).map((z) => h('option', { value: z })));
@@ -708,7 +708,7 @@ async function viewSettings() {
     h('div', { class: 'panel' },
       h('h2', {}, 'Debrid stream addons'),
       h('p', { class: 'hint', style: { marginTop: '-6px', marginBottom: '10px' } },
-        'Paste the manifest URL of each Stremio addon you have configured with your debrid service (Torrentio, Comet, MediaFusion, AIOStreams, Jackettio…), one per line. ',
+        'Paste the manifest URL of each Stremio addon you have configured with your debrid service, one per line. ',
         'Your debrid key is already part of that URL. StreamTube asks all of them and only uses cached, direct links.'),
       addons,
       h('div', { class: 'row', style: { marginTop: '10px' } }, h('button', { class: 'btn', onclick: (e) => test(e.currentTarget) }, 'Test addons')),

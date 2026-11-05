@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
-import { config, log } from './config.js';
+import { config, log, redact } from './config.js';
 import { store } from './db.js';
 import { headerArgs } from './probe.js';
 import { prepareStream, dropPrepared, skipUnplayable, preparedFor, fitGuideToFile } from './prefetch.js';
@@ -243,7 +243,7 @@ export class ChannelRunner {
       try {
         return await prepareStream(item, channel);
       } catch (e) {
-        this.setStatus({ state: 'error', message: e.message });
+        this.setStatus({ state: 'error', message: redact(e.message) });
         log.warn(`channel ${channel.number}: ${e.message}`);
         return undefined;
       }

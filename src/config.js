@@ -28,11 +28,21 @@ export const config = {
   logLevel: env.LOG_LEVEL || 'info',
 };
 
+/**
+ * Logs get pasted into bug reports, and stream addon URLs carry debrid keys in their path (as do debrid links,
+ * which ffmpeg names in its errors). Keep each URL's host and drop the rest, plus any user:password@.
+ */
+export function redact(text) {
+  return String(text).replace(/\b(https?:\/\/)(?:[^\s/?#@'"]*@)?([^\s/?#'"]+?)([/?#][^\s'"]*?)?([:;,.)\]]*)(?=[\s'"]|$)/gi,
+    (_m, scheme, host, rest, tail) => `${scheme}${host}${rest ? '/…' : ''}${tail}`);
+}
+
 const levels = { debug: 10, info: 20, warn: 30, error: 40 };
 function logAt(level, args) {
   if (levels[level] < (levels[config.logLevel] ?? 20)) return;
   const ts = new Date().toISOString();
-  (level === 'error' ? console.error : console.log)(`${ts} ${level.toUpperCase().padEnd(5)}`, ...args);
+  const safe = args.map((a) => (a instanceof Error ? redact(a.stack || a.message) : typeof a === 'string' ? redact(a) : a));
+  (level === 'error' ? console.error : console.log)(`${ts} ${level.toUpperCase().padEnd(5)}`, ...safe);
 }
 export const log = {
   debug: (...a) => logAt('debug', a),

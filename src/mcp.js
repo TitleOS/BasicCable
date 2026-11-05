@@ -743,9 +743,9 @@ function registerTools(server) {
 
   server.registerTool('streamtube_add_stream_addon', {
     title: 'Add stream addon',
-    description: 'Add a debrid-enabled Stremio stream addon by its manifest URL (Torrentio, Comet, MediaFusion, AIOStreams... configured with the debrid key in the URL). Tests it first by default.',
+    description: 'Add a debrid-enabled Stremio stream addon by its manifest URL (configured with the debrid key in the URL). Tests it first by default.',
     inputSchema: z.object({
-      url: z.string().min(8).describe('Manifest URL, e.g. https://torrentio.strem.fun/realdebrid=KEY/manifest.json (stremio:// links work too)'),
+      url: z.string().min(8).describe('Manifest URL, e.g. https://addon.example/<debrid config>/manifest.json (stremio:// links work too)'),
       test: z.boolean().default(true).describe('Check it returns cached, playable streams before adding'),
     }),
     annotations: WRITE,
@@ -764,7 +764,7 @@ function registerTools(server) {
 
   server.registerTool('streamtube_remove_stream_addon', {
     title: 'Remove stream addon',
-    description: 'Remove a stream addon by its number in streamtube_get_settings, its host name (e.g. "torrentio") or full URL. Confirm with the user first.',
+    description: 'Remove a stream addon by its number in streamtube_get_settings, its host name (e.g. "addon.example") or full URL. Confirm with the user first.',
     inputSchema: z.object({ addon: z.union([z.number(), z.string()]).describe('1-based number, host name or URL') }),
     annotations: DESTRUCTIVE,
   }, async ({ addon }) => {

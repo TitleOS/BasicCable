@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
@@ -37,8 +38,6 @@ export function send(res, status, body, headers = {}) {
   const payload = isBuf ? body : JSON.stringify(body);
   res.writeHead(status, {
     'content-type': isBuf ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8',
-    'access-control-allow-origin': '*',
-    'access-control-allow-headers': '*',
     ...headers,
   });
   res.end(payload);
@@ -75,14 +74,38 @@ export function clientIp(req) {
   return (fwd || req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 }
 
+const samePassword = (given) => {
+  const a = crypto.createHash('sha256').update(String(given ?? '')).digest();
+  const b = crypto.createHash('sha256').update(config.adminPassword).digest();
+  return crypto.timingSafeEqual(a, b);
+};
+
 export function checkAuth(req) {
   if (!config.adminPassword) return true;
   const h = req.headers.authorization || '';
   // "Bearer <password>" is easier to put in an MCP client's config than Basic auth.
-  if (h.startsWith('Bearer ')) return h.slice(7).trim() === config.adminPassword;
+  if (h.startsWith('Bearer ')) return samePassword(h.slice(7).trim());
   if (!h.startsWith('Basic ')) return false;
   const [, pass] = Buffer.from(h.slice(6), 'base64').toString('utf8').split(/:(.*)/s);
-  return pass === config.adminPassword;
+  return samePassword(pass);
+}
+
+/**
+ * Whether a browser request comes from a page StreamTube served itself. Requests without an Origin header
+ * (curl, MCP clients, Stremio) pass. Behind a reverse proxy that rewrites Host, the forwarded host (with
+ * TRUST_PROXY) or the configured public URL count too.
+ */
+export function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  let host;
+  try { host = new URL(origin).host; } catch { return false; }
+  const allowed = [req.headers.host];
+  if (config.trustProxy) allowed.push(String(req.headers['x-forwarded-host'] || '').split(',')[0].trim());
+  for (const u of [store.getSettings().publicUrl, config.baseUrl]) {
+    try { if (u) allowed.push(new URL(u).host); } catch { /* not a URL */ }
+  }
+  return allowed.includes(host);
 }
 
 const MIME = {

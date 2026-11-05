@@ -7,12 +7,14 @@ services:
     ports:
       - "7000:7000"
     environment:
-      # Your local timezone: schedules and time slots use it.
-      TZ: America/Chicago
+      # Your local timezone (an IANA name such as America/New_York or Europe/London): the guide, schedules and
+      # time slots use it. Change it from UTC, or set it later in the web UI under Settings.
+      TZ: UTC
       # The address other devices on your network use to reach this box.
       # Optional: if empty, StreamTube uses whatever address Stremio installed the addon from.
       BASE_URL: ""
-      # Optional password for the web UI (user name can be anything). Stremio endpoints stay open.
+      # Password for the web UI, its API and the MCP server (user name can be anything). Strongly recommended.
+      # The Stremio addon and live streams stay open, since Stremio can't send a password.
       ADMIN_PASSWORD: ""
     volumes:
       - ./data:/data
