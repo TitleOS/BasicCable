@@ -8,6 +8,8 @@ Basic Cable doesn't provide any media itself; see the [disclaimer](#disclaimer).
 
 You build channels in a web UI that runs in a container on your network. Each channel has a guide that runs on the real clock. When you open a channel in Stremio, Basic Cable finds a cached debrid stream for whatever is on and joins it at the current point. If *Modern Family* started 10 minutes ago, you start 10 minutes in.
 
+![The Basic Cable web UI: a guide with 31 channels, each showing what's on now with its progress and what's next, above a scrolling program grid](docs/guide.png)
+
 - **Auto-fill pools.** Add shows, movies or wildcards to a channel. Any hour without a time slot gets filled from the pool. Shows play their episodes in order and remember where they stopped.
 - **Time slots.** Weekly blocks such as "Weeknights 8:00 PM: Modern Family" or "Weekends 10 PM–1 AM: `Batman*` movies".
 - **Wildcards.** `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. You can untick any match. New titles that match are picked up each day.
