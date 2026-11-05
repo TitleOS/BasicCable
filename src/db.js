@@ -254,4 +254,11 @@ class Store {
   }
 }
 
-export const store = new Store(path.join(config.dataDir, 'streamtube.db'));
+// Basic Cable was called StreamTube before its public release: an install from then keeps its database.
+const dbFile = path.join(config.dataDir, 'basiccable.db');
+const oldDbFile = path.join(config.dataDir, 'streamtube.db');
+if (!fs.existsSync(dbFile) && fs.existsSync(oldDbFile)) {
+  for (const ext of ['', '-wal', '-shm']) if (fs.existsSync(oldDbFile + ext)) fs.renameSync(oldDbFile + ext, dbFile + ext);
+}
+
+export const store = new Store(dbFile);

@@ -205,7 +205,7 @@ export class ChannelRunner {
         buildChannel(this.channelId).catch(() => {});
         this.setStatus({ state: 'offair', item: null, stream: null, message: 'Nothing scheduled' });
         following = false;
-        await this.playSlate('Nothing scheduled on this channel', 'Add shows in the StreamTube web interface', 30);
+        await this.playSlate('Nothing scheduled on this channel', 'Add shows in the Basic Cable web interface', 30);
         continue;
       }
       // A program just finished ahead of the next one's start: that's where the commercials go. Breaks are never

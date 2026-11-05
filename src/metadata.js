@@ -1,5 +1,5 @@
 import { store } from './db.js';
-import { log } from './config.js';
+import { log, VERSION } from './config.js';
 
 const DAY = 24 * 3600 * 1000;
 
@@ -8,7 +8,7 @@ function metaBase() {
 }
 
 export async function fetchJson(url, { timeoutMs = 15000, headers } = {}) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'StreamTube/0.1', ...headers } });
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': `BasicCable/${VERSION}`, ...headers } });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url.replace(/\/\/[^/]*@/, '//***@')}`);
   return res.json();
 }

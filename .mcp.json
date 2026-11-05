@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "streamtube": {
+    "basiccable": {
       "type": "http",
-      "url": "${STREAMTUBE_MCP_URL:-http://localhost:7000/mcp}",
+      "url": "${BASICCABLE_MCP_URL:-http://localhost:7000/mcp}",
       "headers": {
-        "Authorization": "Bearer ${STREAMTUBE_TOKEN:-}"
+        "Authorization": "Bearer ${BASICCABLE_TOKEN:-}"
       }
     }
   }

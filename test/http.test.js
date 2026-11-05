@@ -16,7 +16,7 @@ test('log lines keep a URL\'s host and lose its path, query and credentials', ()
   assert.equal(redact('"https://a.example/k" and \'https://b.example?key=1\''), '"https://a.example/…" and \'https://b.example/…\'');
 });
 
-test('only pages StreamTube served may call the admin API from a browser', () => {
+test('only pages Basic Cable served may call the admin API from a browser', () => {
   const req = (origin, host = 'tv.lan:7000', extra = {}) => ({ headers: { host, ...(origin ? { origin } : {}), ...extra } });
   assert.equal(sameOrigin(req(null)), true, 'no Origin: curl, MCP clients, Stremio');
   assert.equal(sameOrigin(req('http://tv.lan:7000')), true);
@@ -24,5 +24,5 @@ test('only pages StreamTube served may call the admin API from a browser', () =>
   assert.equal(sameOrigin(req('http://tv.lan:7001')), false, 'another port is another origin');
   assert.equal(sameOrigin(req('null')), false, 'sandboxed pages and file:// send "null"');
   // A proxy that rewrites Host: the forwarded host only counts with TRUST_PROXY.
-  assert.equal(sameOrigin(req('https://tv.example.com', 'streamtube:7000', { 'x-forwarded-host': 'tv.example.com' })), false);
+  assert.equal(sameOrigin(req('https://tv.example.com', 'basiccable:7000', { 'x-forwarded-host': 'tv.example.com' })), false);
 });

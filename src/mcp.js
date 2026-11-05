@@ -1,12 +1,11 @@
-// StreamTube's MCP server: lets an assistant (Claude Code, Claude Desktop...) manage channels, schedules,
+// Basic Cable's MCP server: lets an assistant (Claude Code, Claude Desktop...) manage channels, schedules,
 // stream addons and settings from plain-language requests. Served over Streamable HTTP at /mcp.
 
-import fs from 'node:fs';
 import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import * as z from 'zod/v4';
 import { store } from './db.js';
-import { config, log } from './config.js';
+import { config, log, VERSION } from './config.js';
 import { ops } from './api.js';
 import { search, expandWildcard, lookupImdb } from './metadata.js';
 import { itemLabel, replaceItem, contentMinutes } from './scheduler.js';
@@ -18,17 +17,16 @@ import { recentlyShown, noRepeatDays } from './history.js';
 import { listBundles, perBreak, breakAllowance, MAX_PER_BREAK } from './commercials.js';
 import { parseDays, parseClock, parseDuration, minutesBetween, parseTitleSpec, normTitle, parseResolution } from './nl.js';
 
-const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const CHARACTER_LIMIT = 25000;
 
-const INSTRUCTIONS = `StreamTube runs virtual live TV channels for Stremio. Each channel has an auto-fill pool (shows, movies and
+const INSTRUCTIONS = `Basic Cable runs virtual live TV channels for Stremio. Each channel has an auto-fill pool (shows, movies and
 wildcards like "Star Trek*") that plays whenever no weekly time slot is active, plus optional time slots
 ("weeknights 8pm, 1 hour: Modern Family"). Streams come from the user's debrid-enabled Stremio addons.
 
 - Refer to channels by number or name ("4", "Adult Swim"). Refer to shows and movies by name; add "movie:" or
   "show:" or a year ("Heat (1995)") to disambiguate, an IMDb id (tt...) to be exact, or * and ? for wildcards.
   A title with a year is always matched exactly, so "Thunderbolts* (2025)" is the movie, not a wildcard.
-- Times are in the server's timezone (see streamtube_server_status). Days accept "weekdays", "weekends", "daily",
+- Times are in the server's timezone (see basiccable_server_status). Days accept "weekdays", "weekends", "daily",
   "mon-fri", "mon, wed, fri"... Start times accept "8pm", "20:00"...
 - Tools that change things report what each title matched; tell the user, especially when a match looks off.
 - Confirm with the user before deleting channels, replacing slots, importing a backup with replace, or removing
@@ -81,7 +79,7 @@ async function resolveTitle(input, { defaultTypes = null } = {}) {
   if (t.wildcard) {
     const types = t.types || defaultTypes || ['series'];
     const matches = await expandWildcard(t.query, types);
-    if (!matches.length) throw new Error(`The wildcard "${t.query}" matches nothing (${types.join(' & ')}). Try a broader pattern or streamtube_preview_wildcard.`);
+    if (!matches.length) throw new Error(`The wildcard "${t.query}" matches nothing (${types.join(' & ')}). Try a broader pattern or basiccable_preview_wildcard.`);
     return {
       spec: { kind: 'wildcard', ref: t.query, name: t.query, options: { types } },
       note: `wildcard "${t.query}" → ${matches.length} ${types.join('/')} titles: ${matches.slice(0, 12).map((m) => m.name).join(', ')}${matches.length > 12 ? '…' : ''}`,
@@ -100,7 +98,7 @@ async function resolveTitle(input, { defaultTypes = null } = {}) {
   const types = t.types || defaultTypes || ['series', 'movie'];
   // Search by the plain name: a literal * or ? in a title ("Thunderbolts*") only confuses the catalog search.
   const results = await search(t.query.replace(/[*?]/g, ' ').replace(/\s+/g, ' ').trim() || t.query, types);
-  if (!results.length) throw new Error(`Nothing found for "${input}". Check the spelling, add a year, or use streamtube_search_titles.`);
+  if (!results.length) throw new Error(`Nothing found for "${input}". Check the spelling, add a year, or use basiccable_search_titles.`);
   const q = normTitle(t.query);
   const qWords = q.split(' ').filter((w) => w.length > 1);
   const scored = results.map((m, i) => {
@@ -245,7 +243,7 @@ const channelFields = {
   commercials_per_break: z.number().int().min(0).max(MAX_PER_BREAK).optional()
     .describe('Commercials played between programs: 0 = no commercial breaks, 1-3 clips per break'),
   commercial_bundles: z.array(z.string()).optional()
-    .describe('Commercial bundles this channel draws from (names from streamtube_list_commercials); [] = every bundle'),
+    .describe('Commercial bundles this channel draws from (names from basiccable_list_commercials); [] = every bundle'),
   no_repeat_days: z.number().min(0).max(60).optional().describe('An episode or movie that aired waits this many days before airing again on the channel (default 3; 0 = no limit)'),
 };
 
@@ -282,7 +280,7 @@ const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, idempotentHint
 function registerTools(server) {
   // ---- reading
 
-  server.registerTool('streamtube_list_channels', {
+  server.registerTool('basiccable_list_channels', {
     title: 'List channels',
     description: 'List every channel with its settings, what is on now and next, its auto-fill pool and time slots. Start here to see what exists.',
     inputSchema: z.object({ response_format: z.enum(['markdown', 'json']).default('markdown') }),
@@ -290,11 +288,11 @@ function registerTools(server) {
   }, async ({ response_format }) => {
     const channels = store.listChannels();
     if (response_format === 'json') return jsonResult({ timezone: tz(), channels: channels.map((c) => ({ ...ops.channelDetail(c), now: nowNext(c).cur, next: nowNext(c).next })) });
-    if (!channels.length) return text('No channels yet. Create one with streamtube_create_channel.');
+    if (!channels.length) return text('No channels yet. Create one with basiccable_create_channel.');
     return text(`${channels.length} channels (times in ${tz()}):\n\n${channels.map((c) => channelSummary(c)).join('\n\n')}`);
   });
 
-  server.registerTool('streamtube_get_channel', {
+  server.registerTool('basiccable_get_channel', {
     title: 'Get channel',
     description: 'One channel in detail: settings, pool, slots (with slot ids) and its upcoming guide.',
     inputSchema: z.object({
@@ -308,9 +306,9 @@ function registerTools(server) {
     return text(`${channelSummary(c, now)}\n\n**Guide, next ${guide_hours}h** (${tz()})\n${guideLines(c, now, now + guide_hours * 3600e3)}`);
   });
 
-  server.registerTool('streamtube_get_guide', {
+  server.registerTool('basiccable_get_guide', {
     title: 'Get guide',
-    description: 'The program guide for one channel or all channels over the next few hours. Use streamtube_whats_on for just now/next.',
+    description: 'The program guide for one channel or all channels over the next few hours. Use basiccable_whats_on for just now/next.',
     inputSchema: z.object({
       channel: z.union([z.string(), z.number()]).optional().describe('Channel number or name; omit for all channels'),
       hours: z.number().min(0.5).max(48).default(4).describe('How many hours ahead'),
@@ -324,7 +322,7 @@ function registerTools(server) {
     return text(list.map((c) => `### ${c.number} · ${c.name}\n${guideLines(c, from, to)}`).join('\n\n') + `\n\n(times in ${tz()})`);
   });
 
-  server.registerTool('streamtube_whats_on', {
+  server.registerTool('basiccable_whats_on', {
     title: "What's on",
     description: 'What is playing right now and next on every enabled channel, and which channels are being watched (and by which device IPs).',
     inputSchema: z.object({}),
@@ -342,10 +340,10 @@ function registerTools(server) {
     return text(`${fmtDay(now)} ${fmtTime(now)} (${tz()})\n${lines.join('\n') || 'No enabled channels.'}`);
   });
 
-  server.registerTool('streamtube_list_commercials', {
+  server.registerTool('basiccable_list_commercials', {
     title: 'List commercials',
     description: 'The commercial library: bundles of short clips (old commercials, bumpers) and which channels play breaks from them. ' +
-      'Turn breaks on for a channel with streamtube_update_channel (commercials_per_break 1-3, commercial_bundles). Clips are uploaded, and bundles imported/exported as .zip files, on the web UI\'s Commercials page.',
+      'Turn breaks on for a channel with basiccable_update_channel (commercials_per_break 1-3, commercial_bundles). Clips are uploaded, and bundles imported/exported as .zip files, on the web UI\'s Commercials page.',
     inputSchema: z.object({}),
     annotations: RO,
   }, async () => {
@@ -362,7 +360,7 @@ function registerTools(server) {
       chans.length ? `Channels with commercial breaks:\n${chans.join('\n')}` : 'No channel has commercial breaks turned on.'].join('\n\n'));
   });
 
-  server.registerTool('streamtube_recently_shown', {
+  server.registerTool('basiccable_recently_shown', {
     title: 'Recently shown',
     description: "What aired on a channel over the last few days, newest first, from the channel's history (kept 90 days). Items cut short are marked; they don't count against the channel's no-repeat window.",
     inputSchema: z.object({
@@ -391,7 +389,7 @@ function registerTools(server) {
     return text(out.join('\n'));
   });
 
-  server.registerTool('streamtube_search_titles', {
+  server.registerTool('basiccable_search_titles', {
     title: 'Search titles',
     description: 'Search shows and movies (Cinemeta, the same catalog Stremio uses). Use it to check a name or find the exact title/IMDb id before adding it.',
     inputSchema: z.object({
@@ -406,7 +404,7 @@ function registerTools(server) {
     return text(res.map((m) => `- ${m.name} — ${m.type === 'series' ? 'show' : 'movie'}${m.releaseInfo ? `, ${m.releaseInfo}` : ''} (${m.id})`).join('\n'));
   });
 
-  server.registerTool('streamtube_preview_wildcard', {
+  server.registerTool('basiccable_preview_wildcard', {
     title: 'Preview wildcard',
     description: 'Show which titles a wildcard such as "Star Trek*" or "*Batman*" would add, before adding it.',
     inputSchema: z.object({
@@ -419,9 +417,9 @@ function registerTools(server) {
     return text(res.length ? `${res.length} matches for "${pattern}":\n${res.map((m) => `- ${m.name}${m.releaseInfo ? ` (${m.releaseInfo})` : ''} ${m.id}`).join('\n')}` : `No matches for "${pattern}".`);
   });
 
-  server.registerTool('streamtube_check_streams', {
+  server.registerTool('basiccable_check_streams', {
     title: 'Check streams',
-    description: 'Which debrid releases are available for what is on now (or next) on a channel, ranked the way StreamTube would pick them. Useful when something looks wrong (low quality, not playing).',
+    description: 'Which debrid releases are available for what is on now (or next) on a channel, ranked the way Basic Cable would pick them. Useful when something looks wrong (low quality, not playing).',
     inputSchema: z.object({
       channel: z.union([z.string(), z.number()]).describe('Channel number or name'),
       which: z.enum(['now', 'next']).default('now'),
@@ -439,9 +437,9 @@ function registerTools(server) {
       r.candidates.slice(0, 12).map((x, i) => `${i === 0 ? '▶' : `${i + 1}.`} ${x.resolution || '?'}p${x.preferred ? ' [preferred]' : ''}${x.cached ? ' [cached]' : ''} ${x.label.slice(0, 140)}`).join('\n'));
   });
 
-  server.registerTool('streamtube_server_status', {
+  server.registerTool('basiccable_server_status', {
     title: 'Server status',
-    description: 'StreamTube version, timezone, ffmpeg, install URLs (Stremio manifest, M3U, XMLTV) and which channels are streaming now.',
+    description: 'Basic Cable version, timezone, ffmpeg, install URLs (Stremio manifest, M3U, XMLTV) and which channels are streaming now.',
     inputSchema: z.object({}),
     annotations: RO,
   }, async () => {
@@ -450,14 +448,14 @@ function registerTools(server) {
     const base = (s.publicUrl || config.baseUrl || `http://<this-server>:${config.port}`).replace(/\/+$/, '');
     const live = runnerStatus();
     return text([
-      `StreamTube ${VERSION} · timezone ${tz()} · ffmpeg ${caps.ok ? caps.version : `missing (${caps.error})`}${caps.ok && !caps.subtitles ? ' (subtitles off: needs ffmpeg 7.x)' : ''}`,
+      `Basic Cable ${VERSION} · timezone ${tz()} · ffmpeg ${caps.ok ? caps.version : `missing (${caps.error})`}${caps.ok && !caps.subtitles ? ' (subtitles off: needs ffmpeg 7.x)' : ''}`,
       `Channels: ${store.listChannels().length} (${store.listChannels().filter((c) => c.enabled).length} enabled) · stream addons: ${(s.streamAddons || []).length}`,
       `Stremio manifest: ${base}/manifest.json · M3U: ${base}/playlist.m3u · XMLTV: ${base}/epg.xml`,
       live.length ? `Streaming now:\n${live.map((r) => `- channel ${store.getChannel(r.channelId)?.number ?? r.channelId}: ${r.state}${r.item ? ` ${r.item.label}` : ''}${r.stream?.height ? ` @ ${r.stream.height}p` : ''} → ${r.viewers?.join(', ') || 'no active viewer'}`).join('\n')}` : 'Nothing is streaming right now.',
     ].join('\n'));
   });
 
-  server.registerTool('streamtube_get_settings', {
+  server.registerTool('basiccable_get_settings', {
     title: 'Get settings',
     description: 'Server settings: stream addons (debrid keys hidden unless reveal_addon_urls is true), metadata addon, timezone, preferred release words, prefetch lead time, per-device stream cap, default resolution.',
     inputSchema: z.object({ reveal_addon_urls: z.boolean().default(false).describe('Show full addon URLs, including the debrid key inside them') }),
@@ -466,7 +464,7 @@ function registerTools(server) {
     const s = store.getSettings();
     const addons = (s.streamAddons || []).map((u, i) => `${i + 1}. ${reveal_addon_urls ? u : maskAddon(u)}`);
     return text([
-      `Stream addons:\n${addons.join('\n') || '(none — add one with streamtube_add_stream_addon)'}`,
+      `Stream addons:\n${addons.join('\n') || '(none — add one with basiccable_add_stream_addon)'}`,
       `Metadata addon: ${s.metaAddon}`,
       `Timezone: ${s.timezone}`,
       `Preferred release words: ${(s.preferKeywords || []).join(', ') || '(none)'}`,
@@ -480,7 +478,7 @@ function registerTools(server) {
 
   // ---- channels
 
-  server.registerTool('streamtube_create_channel', {
+  server.registerTool('basiccable_create_channel', {
     title: 'Create channel',
     description: 'Create a channel in one go: name and settings, the shows/movies/wildcards for its auto-fill pool, and optional weekly time slots. ' +
       'Example: name "Sitcoms", pool ["The Office", "Parks and Recreation", "Brooklyn Nine-Nine"], slots [{days:"weekdays", start:"8pm", end:"9pm", content:"Modern Family"}]. ' +
@@ -517,7 +515,7 @@ function registerTools(server) {
       `${problems.length ? `\n\nNot added:\n${problems.map((p) => `- ${p}`).join('\n')}` : ''}\n\n${channelSummary(fresh)}`);
   });
 
-  server.registerTool('streamtube_update_channel', {
+  server.registerTool('basiccable_update_channel', {
     title: 'Update channel',
     description: 'Change one channel\'s name, number or settings (resolution, fill order, subtitles, audio, skip words...). Only the fields you pass change. For the pool or slots use the pool/slot tools.',
     inputSchema: z.object({
@@ -535,7 +533,7 @@ function registerTools(server) {
     return text(`Updated.\n\n${channelSummary(c)}`);
   });
 
-  server.registerTool('streamtube_bulk_update_channels', {
+  server.registerTool('basiccable_bulk_update_channels', {
     title: 'Bulk update channels',
     description: 'Apply the same settings to many channels at once, e.g. "set every channel to 720p" or "turn subtitles off on channels 3, 5 and Kids". Pass channels: "all", or a list of numbers/names.',
     inputSchema: z.object({
@@ -555,7 +553,7 @@ function registerTools(server) {
     return text(`Updated ${done.length} channels:\n${done.join('\n')}`);
   });
 
-  server.registerTool('streamtube_delete_channel', {
+  server.registerTool('basiccable_delete_channel', {
     title: 'Delete channel',
     description: 'Delete a channel with its pool, slots and guide. Cannot be undone (an export_backup first keeps a copy). Confirm with the user first.',
     inputSchema: z.object({ channel: z.union([z.string(), z.number()]).describe('Channel number or name') }),
@@ -568,7 +566,7 @@ function registerTools(server) {
 
   // ---- pool
 
-  server.registerTool('streamtube_add_to_pool', {
+  server.registerTool('basiccable_add_to_pool', {
     title: 'Add to pool',
     description: 'Add shows, movies or wildcards to a channel\'s auto-fill pool, e.g. ["Bob\'s Burgers", "movies: Batman*", "tt0386676"]. Returns what each matched.',
     inputSchema: z.object({
@@ -594,9 +592,9 @@ function registerTools(server) {
     return text(`${c.number} ${c.name}:\n${lines.join('\n')}`);
   });
 
-  server.registerTool('streamtube_remove_from_pool', {
+  server.registerTool('basiccable_remove_from_pool', {
     title: 'Remove from pool',
-    description: 'Remove shows, movies or wildcards from a channel\'s auto-fill pool, by name, IMDb id or wildcard pattern. To drop single titles from a wildcard, use streamtube_set_wildcard_exclusions instead.',
+    description: 'Remove shows, movies or wildcards from a channel\'s auto-fill pool, by name, IMDb id or wildcard pattern. To drop single titles from a wildcard, use basiccable_set_wildcard_exclusions instead.',
     inputSchema: z.object({
       channel: z.union([z.string(), z.number()]),
       titles: z.array(z.string()).min(1),
@@ -623,7 +621,7 @@ function registerTools(server) {
     return text(`${c.number} ${c.name}:\n${lines.join('\n')}`);
   });
 
-  server.registerTool('streamtube_set_wildcard_exclusions', {
+  server.registerTool('basiccable_set_wildcard_exclusions', {
     title: 'Set wildcard exclusions',
     description: 'Untick (exclude) or re-tick (include) individual titles that a wildcard in a channel\'s pool matched, e.g. exclude "Star Trek Continues" from "Star Trek*". Can also re-scan the wildcard for new titles.',
     inputSchema: z.object({
@@ -650,7 +648,7 @@ function registerTools(server) {
 
   // ---- slots
 
-  server.registerTool('streamtube_add_slots', {
+  server.registerTool('basiccable_add_slots', {
     title: 'Add time slots',
     description: 'Add weekly time slots to a channel, e.g. [{days:"weeknights", start:"8pm", end:"9pm", content:"Modern Family"}, {days:"saturday", start:"9am", length:"3h", content:"pool"}]. ' +
       'Set replace_existing to swap out all the channel\'s current slots (confirm with the user first). When slots overlap, the earlier-starting one wins.',
@@ -679,9 +677,9 @@ function registerTools(server) {
       `${problems.length ? `\n\nNot added:\n${problems.map((p) => `- ${p}`).join('\n')}` : ''}\n\nAll slots now:\n${store.listSlots(c.id).map((s) => `- ${slotLabel(s)}`).join('\n')}`);
   });
 
-  server.registerTool('streamtube_remove_slots', {
+  server.registerTool('basiccable_remove_slots', {
     title: 'Remove time slots',
-    description: 'Remove time slots from a channel by slot id (see streamtube_get_channel), or all of them.',
+    description: 'Remove time slots from a channel by slot id (see basiccable_get_channel), or all of them.',
     inputSchema: z.object({
       channel: z.union([z.string(), z.number()]),
       slot_ids: z.array(z.number().int()).default([]),
@@ -701,7 +699,7 @@ function registerTools(server) {
 
   // ---- playback
 
-  server.registerTool('streamtube_skip_current', {
+  server.registerTool('basiccable_skip_current', {
     title: 'Skip current program',
     description: 'Skip what is on now on a channel and start whatever the channel\'s rules pick next (next episode, or another title). Anyone watching switches over once the video already sent to their player has played (up to about 30 seconds).',
     inputSchema: z.object({ channel: z.union([z.string(), z.number()]) }),
@@ -718,7 +716,7 @@ function registerTools(server) {
     return text(`Skipped ${itemLabel(cur)} on ${c.number} ${c.name}. Now: ${now ? itemLabel(now) : 'nothing scheduled'}${live ? ' (switching the live stream now)' : ''}.`);
   });
 
-  server.registerTool('streamtube_rebuild_guide', {
+  server.registerTool('basiccable_rebuild_guide', {
     title: 'Rebuild guide',
     description: 'Re-plan the upcoming guide for a channel (or every channel). What is on now keeps playing. Rarely needed: edits rebuild automatically.',
     inputSchema: z.object({ channel: z.union([z.string(), z.number()]).optional().describe('Omit for every channel') }),
@@ -729,7 +727,7 @@ function registerTools(server) {
     return text(`Rebuilt the guide for ${list.map((c) => `${c.number} ${c.name}`).join(', ')}.`);
   });
 
-  server.registerTool('streamtube_repair_guide', {
+  server.registerTool('basiccable_repair_guide', {
     title: 'Repair guide',
     description: 'Find guide items stretched far past their usual runtime (e.g. a 50-minute episode holding a 9-hour slot) and fix them: upcoming ones are re-planned, an on-air one is skipped. Also runs automatically at startup.',
     inputSchema: z.object({}),
@@ -741,7 +739,7 @@ function registerTools(server) {
 
   // ---- stream addons & settings
 
-  server.registerTool('streamtube_add_stream_addon', {
+  server.registerTool('basiccable_add_stream_addon', {
     title: 'Add stream addon',
     description: 'Add a debrid-enabled Stremio stream addon by its manifest URL (configured with the debrid key in the URL). Tests it first by default.',
     inputSchema: z.object({
@@ -762,9 +760,9 @@ function registerTools(server) {
     return text(`Added stream addon ${maskAddon(clean)}.${report}`);
   });
 
-  server.registerTool('streamtube_remove_stream_addon', {
+  server.registerTool('basiccable_remove_stream_addon', {
     title: 'Remove stream addon',
-    description: 'Remove a stream addon by its number in streamtube_get_settings, its host name (e.g. "addon.example") or full URL. Confirm with the user first.',
+    description: 'Remove a stream addon by its number in basiccable_get_settings, its host name (e.g. "addon.example") or full URL. Confirm with the user first.',
     inputSchema: z.object({ addon: z.union([z.number(), z.string()]).describe('1-based number, host name or URL') }),
     annotations: DESTRUCTIVE,
   }, async ({ addon }) => {
@@ -774,7 +772,7 @@ function registerTools(server) {
     else {
       const q = String(addon).toLowerCase();
       const hits = list.map((u, i) => [u, i]).filter(([u]) => u.toLowerCase() === q || addonBase(u).toLowerCase() === addonBase(q).toLowerCase() || new URL(addonBase(u)).host.includes(q));
-      if (hits.length > 1) throw new Error(`"${addon}" matches several addons; use its number from streamtube_get_settings.`);
+      if (hits.length > 1) throw new Error(`"${addon}" matches several addons; use its number from basiccable_get_settings.`);
       idx = hits[0]?.[1] ?? -1;
     }
     if (idx < 0 || idx >= list.length) throw new Error(`No such addon. There are ${list.length}: ${list.map((u, i) => `${i + 1}. ${maskAddon(u)}`).join(', ') || 'none'}.`);
@@ -783,7 +781,7 @@ function registerTools(server) {
     return text(`Removed ${maskAddon(removed)}. ${list.length - 1} addon(s) left.`);
   });
 
-  server.registerTool('streamtube_test_stream_addons', {
+  server.registerTool('basiccable_test_stream_addons', {
     title: 'Test stream addons',
     description: 'Check that configured stream addons answer and return cached, playable debrid streams (tests against Modern Family S01E01). Tests all of them, or one by number.',
     inputSchema: z.object({ addon: z.number().int().min(1).optional().describe('1-based number; omit to test all') }),
@@ -806,7 +804,7 @@ function registerTools(server) {
     return text(out.join('\n'));
   });
 
-  server.registerTool('streamtube_update_settings', {
+  server.registerTool('basiccable_update_settings', {
     title: 'Update settings',
     description: 'Change server settings: timezone, preferred release words (e.g. ["Superfan"]), blocked release words (e.g. ["YIFY"]), how many minutes ahead streams are prepared, the one-stream-per-device cap, default resolution for new channels, public URL, metadata addon.',
     inputSchema: z.object({
@@ -816,7 +814,7 @@ function registerTools(server) {
       prefetch_minutes: z.number().int().min(0).max(60).optional().describe('Prepare streams this long before airtime; 0 turns it off'),
       one_stream_per_ip: z.boolean().optional(),
       default_resolution: z.union([z.number(), z.string()]).optional(),
-      public_url: z.string().optional().describe('Address devices use to reach StreamTube; "" = from the request'),
+      public_url: z.string().optional().describe('Address devices use to reach Basic Cable; "" = from the request'),
       meta_addon: z.string().optional().describe('Metadata addon URL (Cinemeta by default)'),
     }),
     annotations: { ...WRITE, idempotentHint: true },
@@ -837,16 +835,16 @@ function registerTools(server) {
 
   // ---- backup
 
-  server.registerTool('streamtube_export_backup', {
+  server.registerTool('basiccable_export_backup', {
     title: 'Export backup',
     description: 'Export every channel (settings, pool, wildcards, slots, show progress) as backup JSON. include_settings adds server settings, which contain the debrid addon URLs and keys.',
     inputSchema: z.object({ include_settings: z.boolean().default(false) }),
     annotations: RO,
   }, async ({ include_settings }) => jsonResult(ops.exportBackup({ includeSettings: include_settings })));
 
-  server.registerTool('streamtube_import_backup', {
+  server.registerTool('basiccable_import_backup', {
     title: 'Import backup',
-    description: 'Import a StreamTube backup (the JSON from streamtube_export_backup or the web UI). Adds the channels alongside existing ones, or replaces them all with replace=true (confirm with the user first).',
+    description: 'Import a Basic Cable backup (the JSON from basiccable_export_backup or the web UI). Adds the channels alongside existing ones, or replaces them all with replace=true (confirm with the user first).',
     inputSchema: z.object({
       backup: z.record(z.string(), z.unknown()).describe('The backup JSON object'),
       replace: z.boolean().default(false).describe('Delete every existing channel first'),
@@ -860,7 +858,7 @@ function registerTools(server) {
 }
 
 function createServer() {
-  const server = new McpServer({ name: 'streamtube-mcp-server', version: VERSION }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'basiccable-mcp-server', version: VERSION }, { instructions: INSTRUCTIONS });
   registerTools(server);
   return server;
 }

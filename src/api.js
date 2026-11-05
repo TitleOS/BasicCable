@@ -145,6 +145,7 @@ function channelDetail(c) {
 // Backup / restore
 
 const BACKUP_VERSION = 1;
+const BACKUP_APPS = ['basiccable', 'streamtube'];
 const SETTINGS_KEYS = ['streamAddons', 'metaAddon', 'timezone', 'publicUrl', 'defaultResolution', 'oneStreamPerIp', 'preferKeywords', 'blockKeywords', 'prefetchMinutes'];
 
 /**
@@ -178,7 +179,7 @@ function exportBackup({ includeSettings = false } = {}) {
     slots: store.listSlots(c.id).map((s) => ({ days: s.days, start: s.start, minutes: s.minutes, content: s.content, play_order: s.play_order })),
     progress: progressNow(c.id),
   }));
-  const out = { app: 'streamtube', version: BACKUP_VERSION, exportedAt: new Date().toISOString(), channels };
+  const out = { app: 'basiccable', version: BACKUP_VERSION, exportedAt: new Date().toISOString(), channels };
   if (includeSettings) {
     const s = store.getSettings();
     out.settings = Object.fromEntries(SETTINGS_KEYS.map((k) => [k, s[k]]));
@@ -188,8 +189,9 @@ function exportBackup({ includeSettings = false } = {}) {
 
 /** Validate a whole backup before touching the database, then create everything in one transaction. */
 async function importBackup(data, { replace = false, includeSettings = false } = {}) {
-  if (!data || data.app !== 'streamtube' || !Array.isArray(data.channels)) throw new HttpError(400, "That file isn't a StreamTube backup");
-  if (data.version > BACKUP_VERSION) throw new HttpError(400, 'This backup comes from a newer StreamTube version');
+  // Backups made before the rename say "streamtube".
+  if (!data || !BACKUP_APPS.includes(data.app) || !Array.isArray(data.channels)) throw new HttpError(400, "That file isn't a Basic Cable backup");
+  if (data.version > BACKUP_VERSION) throw new HttpError(400, 'This backup comes from a newer Basic Cable version');
 
   const planned = data.channels.map((c, i) => {
     try {
@@ -323,7 +325,7 @@ async function testAddonOp(url) {
   out.sample = ranked.slice(0, 3).map((c) => ({ resolution: c.resolution, cached: c.cached, label: c.label.slice(0, 140) }));
   out.error = data.error;
   if (!out.withUrl && out.total) out.hint = 'This addon only returns torrents. Configure it with your debrid service (the debrid key goes into the addon URL) so it returns direct links.';
-  else if (out.withUrl && !out.playable) out.hint = 'This addon returns direct links, but none looked cached or usable. If its labels mark cached results differently, StreamTube may need to learn that format.';
+  else if (out.withUrl && !out.playable) out.hint = 'This addon returns direct links, but none looked cached or usable. If its labels mark cached results differently, Basic Cable may need to learn that format.';
   return out;
 }
 
@@ -570,7 +572,7 @@ export function registerApi(router) {
     const date = new Date().toISOString().slice(0, 10);
     send(res, 200, JSON.stringify(exportBackup({ includeSettings }), null, 2), {
       'content-type': 'application/json; charset=utf-8',
-      'content-disposition': `attachment; filename="streamtube-backup-${date}.json"`,
+      'content-disposition': `attachment; filename="basiccable-backup-${date}.json"`,
     });
   }, A);
   router.post('/api/restore', async (req, res) => {

@@ -1,8 +1,8 @@
 services:
-  streamtube:
+  basiccable:
     build: .
-    image: streamtube:latest
-    container_name: streamtube
+    image: basiccable:latest
+    container_name: basiccable
     restart: unless-stopped
     ports:
       - "7000:7000"
@@ -11,7 +11,7 @@ services:
       # time slots use it. Change it from UTC, or set it later in the web UI under Settings.
       TZ: UTC
       # The address other devices on your network use to reach this box.
-      # Optional: if empty, StreamTube uses whatever address Stremio installed the addon from.
+      # Optional: if empty, Basic Cable uses whatever address Stremio installed the addon from.
       BASE_URL: ""
       # Password for the web UI, its API and the MCP server (user name can be anything). Strongly recommended.
       # The Stremio addon and live streams stay open, since Stremio can't send a password.
@@ -21,4 +21,4 @@ services:
     # Live segments and the read-ahead buffer live here; keep them in RAM. Budget ~250 MB per watched 1080p
     # channel (up to ~1 GB for a 4K remux). The read-ahead shrinks itself if this fills up.
     tmpfs:
-      - /tmp/streamtube-hls:size=2g
+      - /tmp/basiccable-hls:size=2g

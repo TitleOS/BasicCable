@@ -1,7 +1,10 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 const env = process.env;
+
+export const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 export const config = {
   port: Number(env.PORT || 7000),
@@ -10,11 +13,11 @@ export const config = {
   // When empty, it is derived from the Host header of each request (which is what Stremio used to install the addon).
   baseUrl: (env.BASE_URL || '').replace(/\/+$/, ''),
   dataDir: env.DATA_DIR || path.resolve('data'),
-  hlsDir: env.HLS_DIR || path.join(os.tmpdir(), 'streamtube-hls'),
+  hlsDir: env.HLS_DIR || path.join(os.tmpdir(), 'basiccable-hls'),
   ffmpeg: env.FFMPEG_PATH || 'ffmpeg',
   ffprobe: env.FFPROBE_PATH || 'ffprobe',
   adminPassword: env.ADMIN_PASSWORD || '',
-  // Use X-Forwarded-For for viewer IPs (only when StreamTube sits behind your own reverse proxy).
+  // Use X-Forwarded-For for viewer IPs (only when Basic Cable sits behind your own reverse proxy).
   trustProxy: /^(1|true|yes)$/i.test(env.TRUST_PROXY || ''),
   timezone: env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   // How far ahead the guide is materialized.

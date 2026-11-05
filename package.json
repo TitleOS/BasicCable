@@ -1,6 +1,6 @@
 {
-  "name": "streamtube",
-  "version": "0.1.0",
+  "name": "basiccable",
+  "version": "0.2.0",
   "description": "Virtual live TV channels for Stremio, powered by your debrid-enabled stream addons",
   "type": "module",
   "main": "src/index.js",

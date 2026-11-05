@@ -1,5 +1,5 @@
-# Forgejo deploy pipeline: tests StreamTube, builds its Docker image on every push to main, scans it with Trivy,
-# then pushes it to a private registry as :<short sha> and :latest. Set the repository variable REGISTRY to the
+# Forgejo deploy pipeline: tests Basic Cable, builds its Docker image on every push to main, scans it with Trivy,
+# then pushes it to a private registry as basiccable:<short sha> and :latest. Set the repository variable REGISTRY to the
 # registry's host:port (no registry auth is used).
 #
 # Failing tests stop the build. Trivy gates the push: any CRITICAL vulnerability with a known fix fails the job
@@ -15,9 +15,6 @@ on:
       - main
   workflow_dispatch: {}
 
-env:
-  REGISTRY: ${{ vars.REGISTRY || '10.0.1.13:5000' }}
-
 jobs:
   build-scan-push:
     runs-on: docker
@@ -25,34 +22,30 @@ jobs:
       - name: Checkout
         uses: https://code.forgejo.org/actions/checkout@v4
 
-      - name: Resolve image tag
+      - name: Resolve image name and tag
         id: vars
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ vars.REGISTRY }}
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "image=${REGISTRY:-10.0.1.13:5000}/basiccable" >> "$GITHUB_OUTPUT"
+          # Changes daily, so the image's Debian security upgrade layer is rebuilt at least once a day instead of
+          # being reused from the build cache (Trivy would otherwise block on a fix released since).
+          echo "apt_day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
       - name: Run tests
         run: |
-          docker run --rm -v "$PWD":/src:ro node:24-trixie-slim sh -c \
-            'cp -r /src /app && cd /app && npm ci --no-audit --no-fund --silent && npm test'
+          docker run --rm -v "$PWD":/src:ro node:24-trixie-slim sh -c             'cp -r /src /app && cd /app && npm ci --no-audit --no-fund --silent && npm test'
 
       - name: Build image
         run: |
-          DOCKER_BUILDKIT=1 docker build \
-            -t ${{ env.REGISTRY }}/streamtube:${{ steps.vars.outputs.sha_short }} \
-            -t ${{ env.REGISTRY }}/streamtube:latest \
-            .
+          DOCKER_BUILDKIT=1 docker build --pull             --build-arg APT_DAY=${{ steps.vars.outputs.apt_day }}             -t ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.sha_short }}             -t ${{ steps.vars.outputs.image }}:latest             .
 
       - name: Scan image with Trivy
         run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v trivy-cache:/root/.cache/ \
-            aquasec/trivy:latest image \
-            --severity CRITICAL \
-            --ignore-unfixed \
-            --exit-code 1 \
-            ${{ env.REGISTRY }}/streamtube:${{ steps.vars.outputs.sha_short }}
+          docker run --rm             -v /var/run/docker.sock:/var/run/docker.sock             -v trivy-cache:/root/.cache/             aquasec/trivy:latest image             --severity CRITICAL             --ignore-unfixed             --exit-code 1             ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.sha_short }}
 
       - name: Push image
         run: |
-          docker push ${{ env.REGISTRY }}/streamtube:${{ steps.vars.outputs.sha_short }}
-          docker push ${{ env.REGISTRY }}/streamtube:latest
+          docker push ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.sha_short }}
+          docker push ${{ steps.vars.outputs.image }}:latest

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { VERSION } from './config.js';
 import { store } from './db.js';
 import { send, baseUrl, clientIp, HttpError } from './http.js';
 import { itemLabel } from './scheduler.js';
@@ -8,9 +9,8 @@ import { preparedFor } from './prefetch.js';
 import { artUrl, artFile, ensureArt } from './art.js';
 import { lineup } from './labels.js';
 
-const PREFIX = 'streamtube:';
-const CATALOG_ID = 'streamtube-channels';
-const VERSION = '0.1.0';
+const PREFIX = 'basiccable:';
+const CATALOG_ID = 'basiccable-channels';
 
 function channelFromId(id) {
   if (!id.startsWith(PREFIX)) return null;
@@ -55,7 +55,7 @@ function channelMeta(channel, req, full = false) {
     posterShape: channel.logo ? 'square' : 'landscape',
     background: art,
     description: lineup(channel.id),
-    genres: ['StreamTube'],
+    genres: ['Basic Cable'],
     runtime: 'LIVE',
     // Without videos, Stremio needs defaultVideoId (also on catalog previews) to know which streams to load.
     behaviorHints: { defaultVideoId: PREFIX + channel.id, isLive: true },
@@ -74,15 +74,15 @@ const NO_CACHE = { 'cache-control': 'no-cache, max-age=0' };
 export function registerAddon(router) {
   router.get('/manifest.json', (req, res) => {
     send(res, 200, {
-      id: 'dev.streamtube.livetv',
+      id: 'community.basiccable.livetv',
       version: VERSION,
-      name: 'StreamTube',
+      name: 'Basic Cable',
       description: 'Virtual live TV channels built from your own schedule, streamed through your debrid addons.',
       logo: `${baseUrl(req)}/icon.svg`,
       resources: ['catalog', 'meta', 'stream'],
       types: ['tv'],
       idPrefixes: [PREFIX],
-      catalogs: [{ type: 'tv', id: CATALOG_ID, name: 'StreamTube' }],
+      catalogs: [{ type: 'tv', id: CATALOG_ID, name: 'Basic Cable' }],
       behaviorHints: { configurable: true, configurationRequired: false },
     });
   });
@@ -113,17 +113,17 @@ export function registerAddon(router) {
     ].filter(Boolean).join('\n');
     // Only `title`: Stremio treats it as an alias of `description`, and sending both makes it reject the stream.
     const streams = [{
-      name: `StreamTube\nLive ${channel.resolution}p`,
+      name: `Basic Cable\nLive ${channel.resolution}p`,
       title: desc,
       url: `${base}/live/${channel.id}/index.m3u8`,
-      behaviorHints: { bingeGroup: `streamtube-${channel.id}` },
+      behaviorHints: { bingeGroup: `basiccable-${channel.id}` },
     }];
     if (cur) {
       streams.push({
-        name: 'StreamTube\nStart over',
+        name: 'Basic Cable\nStart over',
         title: `${itemLabel(cur)} from the beginning (direct debrid link)`,
         url: `${base}/direct/${channel.id}/${cur.id}`,
-        behaviorHints: { notWebReady: true, bingeGroup: `streamtube-direct-${channel.id}` },
+        behaviorHints: { notWebReady: true, bingeGroup: `basiccable-direct-${channel.id}` },
       });
     }
     send(res, 200, { streams }, NO_CACHE);
@@ -212,7 +212,7 @@ export function registerAddon(router) {
     const lines = [`#EXTM3U x-tvg-url="${base}/epg.xml"`];
     for (const c of store.listChannels().filter((x) => x.enabled)) {
       const logo = c.logo || artUrl(base, c);
-      lines.push(`#EXTINF:-1 tvg-id="streamtube.${c.id}" tvg-chno="${c.number}" tvg-name="${c.name}" tvg-logo="${logo}" group-title="StreamTube",${c.name}`);
+      lines.push(`#EXTINF:-1 tvg-id="basiccable.${c.id}" tvg-chno="${c.number}" tvg-name="${c.name}" tvg-logo="${logo}" group-title="Basic Cable",${c.name}`);
       lines.push(`${base}/live/${c.id}/index.m3u8`);
     }
     send(res, 200, lines.join('\n') + '\n', { 'content-type': 'audio/x-mpegurl; charset=utf-8' });
@@ -222,15 +222,15 @@ export function registerAddon(router) {
     const base = baseUrl(req);
     const x = (s) => String(s ?? '').replace(/[<>&"']/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[ch]));
     const t = (ms) => new Date(ms).toISOString().replace(/[-:T]/g, '').slice(0, 14) + ' +0000';
-    const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="StreamTube">'];
+    const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Basic Cable">'];
     const channels = store.listChannels().filter((c) => c.enabled);
     for (const c of channels) {
-      out.push(`  <channel id="streamtube.${c.id}"><display-name>${x(c.name)}</display-name><display-name>${c.number}</display-name><icon src="${x(c.logo || artUrl(base, c))}"/></channel>`);
+      out.push(`  <channel id="basiccable.${c.id}"><display-name>${x(c.name)}</display-name><display-name>${c.number}</display-name><icon src="${x(c.logo || artUrl(base, c))}"/></channel>`);
     }
     const now = Date.now();
     for (const c of channels) {
       for (const r of store.epgRange(c.id, now - 6 * 3600e3, now + 48 * 3600e3)) {
-        out.push(`  <programme start="${t(r.start)}" stop="${t(r.end)}" channel="streamtube.${c.id}">`);
+        out.push(`  <programme start="${t(r.start)}" stop="${t(r.end)}" channel="basiccable.${c.id}">`);
         out.push(`    <title>${x(r.title)}</title>`);
         if (r.episode_title) out.push(`    <sub-title>${x(r.episode_title)}</sub-title>`);
         if (r.description) out.push(`    <desc>${x(r.description)}</desc>`);

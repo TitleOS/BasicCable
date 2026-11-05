@@ -35,7 +35,7 @@ const server = http.createServer(async (req, res) => {
     if (res.statusCode >= 400) log.warn(line);
     else log.info(line);
   });
-  // The admin API and MCP hold debrid keys and can change everything: only pages StreamTube served itself may
+  // The admin API and MCP hold debrid keys and can change everything: only pages Basic Cable served itself may
   // call them from a browser, so another website open on the same network can't read or drive them. Everything
   // else (the Stremio addon, live streams, playlists, art) is open to any origin, as Stremio Web and web
   // players need.
@@ -47,7 +47,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (pathname === '/mcp') {
     // MCP endpoint for assistants (Claude Code etc.). Same password as the web UI when one is set.
-    if (!checkAuth(req)) return send(res, 401, { error: 'Authentication required' }, { 'www-authenticate': 'Basic realm="StreamTube"' });
+    if (!checkAuth(req)) return send(res, 401, { error: 'Authentication required' }, { 'www-authenticate': 'Basic realm="Basic Cable"' });
     return mcpHandler(req, res);
   }
   if (req.method === 'OPTIONS') return send(res, 204, '');
@@ -55,7 +55,7 @@ const server = http.createServer(async (req, res) => {
     const m = router.match(req.method, pathname);
     if (m) {
       if (m.route.auth && !checkAuth(req)) {
-        return send(res, 401, { error: 'Authentication required' }, { 'www-authenticate': 'Basic realm="StreamTube"' });
+        return send(res, 401, { error: 'Authentication required' }, { 'www-authenticate': 'Basic realm="Basic Cable"' });
       }
       await m.route.handler(req, res, m.params);
       return;
@@ -63,7 +63,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' || req.method === 'HEAD') {
       const isUi = !pathname.startsWith('/api/');
       if (isUi && config.adminPassword && !checkAuth(req) && pathname !== '/icon.svg') {
-        return send(res, 401, 'Authentication required', { 'www-authenticate': 'Basic realm="StreamTube"' });
+        return send(res, 401, 'Authentication required', { 'www-authenticate': 'Basic realm="Basic Cable"' });
       }
       if (serveStatic(publicDir, req, res, pathname)) return;
     }
@@ -78,11 +78,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, config.host, async () => {
   const caps = await ffmpegCaps();
-  log.info(`StreamTube listening on http://${config.host}:${config.port}`);
+  log.info(`Basic Cable listening on http://${config.host}:${config.port}`);
   if (['0.0.0.0', '::', ''].includes(config.host) && !config.adminPassword) {
     log.warn('Listening on all network interfaces with no ADMIN_PASSWORD: anyone who can reach this port can change ' +
       'channels and settings, including your stream addon URLs. Set ADMIN_PASSWORD. The Stremio addon and live ' +
-      'streams stay open by design, so if you expose StreamTube to the internet, put it behind a reverse proxy ' +
+      'streams stay open by design, so if you expose Basic Cable to the internet, put it behind a reverse proxy ' +
       'that adds TLS and access control.');
   }
   log.info(`Data dir: ${config.dataDir} · timezone ${config.timezone}`);

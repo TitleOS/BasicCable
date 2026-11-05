@@ -91,7 +91,7 @@ export function checkAuth(req) {
 }
 
 /**
- * Whether a browser request comes from a page StreamTube served itself. Requests without an Origin header
+ * Whether a browser request comes from a page Basic Cable served itself. Requests without an Origin header
  * (curl, MCP clients, Stremio) pass. Behind a reverse proxy that rewrites Host, the forwarded host (with
  * TRUST_PROXY) or the configured public URL count too.
  */

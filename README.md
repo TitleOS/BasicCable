@@ -1,22 +1,24 @@
-# StreamTube
+<p align="center"><img src="public/icon.svg" width="128" alt="Basic Cable logo: a red TV set showing color bars, with a coax cable"></p>
+
+# Basic Cable
 
 Virtual live TV channels for Stremio, built from any show or movie Stremio can find and played through the Stremio stream addons you've configured with your debrid service.
 
-StreamTube doesn't provide any media itself; see the [disclaimer](#disclaimer).
+Basic Cable doesn't provide any media itself; see the [disclaimer](#disclaimer).
 
-You build channels in a web UI that runs in a container on your network. Each channel has a guide that runs on the real clock. When you open a channel in Stremio, StreamTube finds a cached debrid stream for whatever is on and joins it at the current point. If *Modern Family* started 10 minutes ago, you start 10 minutes in.
+You build channels in a web UI that runs in a container on your network. Each channel has a guide that runs on the real clock. When you open a channel in Stremio, Basic Cable finds a cached debrid stream for whatever is on and joins it at the current point. If *Modern Family* started 10 minutes ago, you start 10 minutes in.
 
 - **Auto-fill pools.** Add shows, movies or wildcards to a channel. Any hour without a time slot gets filled from the pool. Shows play their episodes in order and remember where they stopped.
 - **Time slots.** Weekly blocks such as "Weeknights 8:00 PM: Modern Family" or "Weekends 10 PM–1 AM: `Batman*` movies".
 - **Wildcards.** `Star Trek*` adds The Next Generation, Voyager, Deep Space Nine, Discovery and the rest. You can untick any match. New titles that match are picked up each day.
-- **English subtitles.** StreamTube looks for an English SDH track in the file, then the first English or unlabelled one. Text subtitles become a selectable caption track. Image subtitles (Blu-ray PGS) are burned into the picture. See [Subtitles](#subtitles).
+- **English subtitles.** Basic Cable looks for an English SDH track in the file, then the first English or unlabelled one. Text subtitles become a selectable caption track. Image subtitles (Blu-ray PGS) are burned into the picture. See [Subtitles](#subtitles).
 - **Target resolution per channel.** The picker uses the exact resolution when it can. Otherwise it takes the next best: by default the nearest lower one, or optionally the nearest higher one. It only uses cached, direct debrid links, and it skips CAM, telesync and TVSYNC releases, Dolby Vision-only files (optional) and any keywords you list.
-- **The right show.** Addons sometimes answer one show's id with a sibling's files (for example *Star Wars: The Clone Wars* episodes for the 2003 *Star Wars: Clone Wars*). StreamTube reads the title off each release's file name and drops a release that names a different show or movie it plays on any channel. Namesakes (*Doctor Who* 2005 and 2023) are told apart by the year in the release name. Releases whose names it can't read, or that name something it doesn't play, are kept.
+- **The right show.** Addons sometimes answer one show's id with a sibling's files (for example *Star Wars: The Clone Wars* episodes for the 2003 *Star Wars: Clone Wars*). Basic Cable reads the title off each release's file name and drops a release that names a different show or movie it plays on any channel. Namesakes (*Doctor Who* 2005 and 2023) are told apart by the year in the release name. Releases whose names it can't read, or that name something it doesn't play, are kept.
 - **Preferred and blocked releases.** Releases whose names contain a preferred word win over everything else, resolution included. The default is `Superfan`, so The Office plays its extended Superfan episodes when an addon has them. Blocked words (Settings, whole words, every channel) rule a release out entirely. The default blocks `YIFY` and `YTS`, whose small re-encodes look soft on a big screen.
 - **HDR.** Tick *Prefer HDR* on a channel to pick HDR10, HDR10+ or HLG over SDR, and *Prefer HDR10* to pick HDR10/HDR10+ first. Either one only reorders releases at the resolution the picker settled on; it never trades resolution for HDR. While *Avoid Dolby Vision-only releases* is ticked, a Dolby Vision file without an HDR10 layer doesn't count as HDR.
 - **No reruns too soon.** Everything that airs is recorded in a per-channel *Recently shown* history (kept 90 days, shown in the channel editor). A channel won't air the same episode or movie again within its *Don't repeat within* window, 3 days by default: if S02E03 aired Monday at 10 AM, it can't come back before Thursday 10 AM. If every choice is a repeat (a small pool), the one shown longest ago plays instead of dead air. Episodes cut short don't count.
 - **Commercial breaks.** Upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps"…) and have a channel play 1–3 of them between programs. See [Commercials](#commercials).
-- **Streams prepared ahead.** About 10 minutes before each program airs, StreamTube asks your addons, picks the file and checks it. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
+- **Streams prepared ahead.** About 10 minutes before each program airs, Basic Cable asks your addons, picks the file and checks it. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore.** Export your channels, pools, wildcards, slots and each show's progress as one JSON file, and import it into another install. See [Backup and restore](#backup-and-restore).
 - **One stream per device.** Each viewer IP watches one channel at a time, so channel surfing doesn't leave old channels running. See [Stream cap](#stream-cap).
 - **Manage it by asking.** A built-in MCP server lets Claude (or any MCP client) create and edit channels from plain requests like "make a Saturday-morning cartoons channel". See [MCP server](#mcp-server).
@@ -26,8 +28,8 @@ You build channels in a web UI that runs in a container on your network. Each ch
 ## How it works
 
 ```
-Stremio ──/stream/tv/streamtube:3──▶ StreamTube ──▶ live HLS URL for channel 3
-Stremio ──/live/3/index.m3u8───────▶ StreamTube
+Stremio ──/stream/tv/basiccable:3──▶ Basic Cable ──▶ live HLS URL for channel 3
+Stremio ──/live/3/index.m3u8───────▶ Basic Cable
                                        │ guide says: Modern Family S01E05, 10:00 in
                                        │ ask your Stremio stream addons
                                        │ rank: cached + direct link + target resolution
@@ -35,7 +37,7 @@ Stremio ──/live/3/index.m3u8───────▶ StreamTube
                          ffmpeg -ss 600 -readrate 1 -i <debrid link> -c:v copy → HLS
 ```
 
-The Stremio stream protocol has no "start at" field, so StreamTube does the playout itself. A single ffmpeg process per channel reads the debrid file in real time from the scheduled offset. It remuxes the video without re-encoding and, by default, converts the audio to stereo AAC. The output is a rolling HLS playlist. When a program ends, the next one is joined to the same playlist with a discontinuity marker, so playback continues like a real channel. Everyone watching a channel shares that one ffmpeg process, so a channel uses one debrid connection no matter how many people watch. ffmpeg stops a minute after the last viewer leaves.
+The Stremio stream protocol has no "start at" field, so Basic Cable does the playout itself. A single ffmpeg process per channel reads the debrid file in real time from the scheduled offset. It remuxes the video without re-encoding and, by default, converts the audio to stereo AAC. The output is a rolling HLS playlist. When a program ends, the next one is joined to the same playlist with a discontinuity marker, so playback continues like a real channel. Everyone watching a channel shares that one ffmpeg process, so a channel uses one debrid connection no matter how many people watch. ffmpeg stops a minute after the last viewer leaves.
 
 The live playlist is built to ride out a flaky debrid connection without errors:
 
@@ -43,9 +45,9 @@ The live playlist is built to ride out a flaky debrid connection without errors:
 - **Player cushion.** The playlist runs 30 seconds ahead of live, counted from the moment the channel's first video exists, so a player that tunes in starts with about 30 seconds of its own buffer. (With 18 seconds, players stalled a few times in their first minutes.) The playlist lists about 60 seconds, so a player that stalls carries on from where it was instead of being pushed out of the window (an error followed by a jump ahead).
 - **Hand-overs.** If the next program's stream isn't ready when one ends, short "Up next" filler segments keep the playlist moving, so players don't give up and drop back to their menus.
 - **Continuous timestamps.** Each program's timestamps continue from the last one, so players that ignore discontinuity markers (mpv, which Stremio desktop uses) never see time run backwards at an episode change.
-- **Drop-outs.** If a link drops part-way through an episode, playback resumes from the last second delivered. Nothing is skipped; the end of the episode is trimmed instead. ffmpeg sometimes exits "normally" when a link dies, so StreamTube only counts an episode as finished if it reached the end of the file or its slot.
+- **Drop-outs.** If a link drops part-way through an episode, playback resumes from the last second delivered. Nothing is skipped; the end of the episode is trimmed instead. ffmpeg sometimes exits "normally" when a link dies, so Basic Cable only counts an episode as finished if it reached the end of the file or its slot.
 - **Sparse keyframes.** Copied video can only be cut into segments at its keyframes. Most files have one every 10 seconds or less, but some rips go 30 seconds or more without one, and segments that long make players stall. When a segment comes out longer than 12 seconds, it is thrown away before it is published and the rest of the program is re-encoded with a keyframe every 2 seconds (about one to two CPU cores for 1080p). HDR video stays copied, since re-encoding it would flatten its colours.
-- **Bad files.** A file that fails as soon as it starts gets one retry with the video re-encoded. If that fails too, the next release is tried, and if every release fails, another episode takes its place. If nothing works at all, a "couldn't play" slate is shown and StreamTube keeps retrying.
+- **Bad files.** A file that fails as soon as it starts gets one retry with the video re-encoded. If that fails too, the next release is tried, and if every release fails, another episode takes its place. If nothing works at all, a "couldn't play" slate is shown and Basic Cable keeps retrying.
 
 Failed segment and playlist requests are logged as warnings, so if a player hits a problem, it shows up in the logs.
 
@@ -59,13 +61,13 @@ Open `http://<server-ip>:7000` from any device on your network.
 
 1. **Settings → Debrid stream addons.** Paste the manifest URL of each Stremio stream addon you've set up with your debrid service, one per line. Most such addons put your debrid key inside the manifest URL when you configure them, so treat these URLs like passwords. Click **Test addons** to confirm each one returns cached links.
 2. **Channels → New channel.** Name it, pick a target resolution, then add shows or movies to the auto-fill pool, or add a wildcard. Add time slots if you want fixed programming.
-3. **Connect.** Copy the manifest URL, then in Stremio go to **Addons**, paste it into the search box and click **Install**. The one-click install button only appears for https addresses, because Stremio treats `stremio://` links as https. The channels show up under **Discover → TV → StreamTube**.
+3. **Connect.** Copy the manifest URL, then in Stremio go to **Addons**, paste it into the search box and click **Install**. The one-click install button only appears for https addresses, because Stremio treats `stremio://` links as https. The channels show up under **Discover → TV → Basic Cable**.
 
 > Open the web UI through the server's LAN address, not `localhost`, before you copy the install link. Stremio on your TV needs an address it can reach. If you use a reverse proxy, set **Public URL** in Settings or `BASE_URL` in compose.
 
 ### Stremio clients and https
 
-The desktop, Android and Android TV apps accept plain `http://` LAN addresses. **Stremio Web** (web.stremio.com) only loads `https` addons. To use StreamTube there, put it behind a reverse proxy with a certificate, such as Caddy, Nginx Proxy Manager or Tailscale Serve, and set the public URL.
+The desktop, Android and Android TV apps accept plain `http://` LAN addresses. **Stremio Web** (web.stremio.com) only loads `https` addons. To use Basic Cable there, put it behind a reverse proxy with a certificate, such as Caddy, Nginx Proxy Manager or Tailscale Serve, and set the public URL.
 
 ## Configuration
 
@@ -76,20 +78,20 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 | `BASE_URL` | *(from request)* | Public address used in stream and playlist URLs. |
 | `ADMIN_PASSWORD` | *(none)* | Protects the web UI, its API and the MCP server with HTTP basic auth (any user name). Strongly recommended; see [Security](#security). The addon, live and playlist endpoints stay open because Stremio and IPTV apps can't log in. |
 | `DATA_DIR` | `/data` | SQLite database. |
-| `HLS_DIR` | `/tmp/streamtube-hls` | Live segments plus the read-ahead buffer. Put it on a tmpfs (RAM); see [Keeping segments in RAM](#keeping-segments-in-ram). |
+| `HLS_DIR` | `/tmp/basiccable-hls` | Live segments plus the read-ahead buffer. Put it on a tmpfs (RAM); see [Keeping segments in RAM](#keeping-segments-in-ram). |
 | `READ_AHEAD_SECONDS` | `120` | How far ahead of real time each watched channel reads. `0` turns read-ahead off. |
 | `READ_AHEAD_MB` | `300` | Per-channel cap on the read-ahead buffer. It also never takes more than a quarter of the free space in `HLS_DIR`, so a 4K remux reads less far ahead. |
 | `GUIDE_HOURS` | `48` | How far ahead the guide is planned. |
 | `IDLE_SECONDS` | `60` | How long a channel keeps running after its last viewer leaves. |
-| `TRUST_PROXY` | *(off)* | Set to `1` when StreamTube sits behind your own reverse proxy, so viewer IPs are read from `X-Forwarded-For`. Without it, every viewer looks like the proxy. |
+| `TRUST_PROXY` | *(off)* | Set to `1` when Basic Cable sits behind your own reverse proxy, so viewer IPs are read from `X-Forwarded-For`. Without it, every viewer looks like the proxy. |
 | `SUBTITLE_BURN_PRESET` | `veryfast` | x264 preset used when burning in image subtitles. Faster presets use less CPU but give lower quality. |
 
 ## Security
 
-- **Set `ADMIN_PASSWORD`.** Without it, anyone who can reach the port can change channels and settings and read your stream addon URLs, which usually contain your debrid key. StreamTube logs a warning at startup when it listens on all interfaces without a password.
+- **Set `ADMIN_PASSWORD`.** Without it, anyone who can reach the port can change channels and settings and read your stream addon URLs, which usually contain your debrid key. Basic Cable logs a warning at startup when it listens on all interfaces without a password.
 - **Some endpoints are always open.** Stremio and IPTV apps can't log in, so the addon (`/manifest.json`, `/catalog`, `/meta`, `/stream`), the live streams (`/live`), `/direct`, `/playlist.m3u`, `/epg.xml` and channel art need no password. Anyone who can reach them can watch your channels, and so use your debrid account.
-- **Other websites can't use it.** The web UI's API and the MCP server refuse browser requests from pages StreamTube didn't serve, so a site open in a browser on your network can't read or change anything. Behind a reverse proxy that rewrites the `Host` header, set **Public URL** (or `BASE_URL`), or `TRUST_PROXY=1` so `X-Forwarded-Host` is used.
-- **Keep it on your network.** If you do choose to expose StreamTube to the internet, put it behind a reverse proxy that adds TLS and its own access control (an allow-list, a VPN such as Tailscale, or an authenticating proxy), and keep `ADMIN_PASSWORD` set.
+- **Other websites can't use it.** The web UI's API and the MCP server refuse browser requests from pages Basic Cable didn't serve, so a site open in a browser on your network can't read or change anything. Behind a reverse proxy that rewrites the `Host` header, set **Public URL** (or `BASE_URL`), or `TRUST_PROXY=1` so `X-Forwarded-Host` is used.
+- **Keep it on your network.** If you do choose to expose Basic Cable to the internet, put it behind a reverse proxy that adds TLS and its own access control (an allow-list, a VPN such as Tailscale, or an authenticating proxy), and keep `ADMIN_PASSWORD` set.
 - **Logs are safe to share.** URLs in log lines keep only their host (`https://addon.example/…`), so addon URLs and debrid links don't end up in bug reports.
 
 ## Scheduling details
@@ -104,19 +106,19 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 - **Episode memory** is per channel and per show, and is shared between the pool and slots. Specials (season 0) and unreleased episodes are skipped.
 - **No-repeat window.** The planner skips anything that aired, or is already planned, in full within the channel's window, counting both the history and the guide ahead. In-order shows skip past such an episode; random ones pick another. The window is measured from start time to start time. A guide planned before you change the window keeps its items until you rebuild it (editing the window rebuilds that channel's guide).
   - **Checked again before airing.** The guide is planned two days ahead and then moves earlier as programs turn out shorter than planned, which can pull an episode a few hours inside the window. So when a program's stream is prepared, about 10 minutes before it airs, its real time is checked again. If it would now be a rerun, the channel's usual rules put something else in its place.
-  - **Small lineups rerun by design.** A channel with less programming than its window (11 films is about 25 hours, against a 3-day window) can't avoid reruns. It plays whatever aired longest ago, so everything comes round before anything repeats. The channel editor's Recently shown panel, and the MCP's `streamtube_recently_shown`, say when that's the case. Add titles or lower the window to change it.
+  - **Small lineups rerun by design.** A channel with less programming than its window (11 films is about 25 hours, against a 3-day window) can't avoid reruns. It plays whatever aired longest ago, so everything comes round before anything repeats. The channel editor's Recently shown panel, and the MCP's `basiccable_recently_shown`, say when that's the case. Add titles or lower the window to change it.
 - Editing a channel replans everything after the program that's on now. What's airing keeps playing.
 
 ## Subtitles
 
-When the file has embedded subtitles, StreamTube picks one track per program:
+When the file has embedded subtitles, Basic Cable picks one track per program:
 
 1. An English SDH track (flagged hearing-impaired, or titled SDH/CC), if there is one.
 2. Otherwise, the first English or unlabelled track.
 
 Forced-only tracks, which carry just the foreign-language lines, are skipped.
 
-Many releases have no subtitles at all (small x265 WEBRips especially). When the best-ranked release that plays has none, StreamTube probes up to two more releases ranked level with it (same resolution, HDR, preferred words, and cached on your debrid service) and uses the first one with a subtitle track tagged English (an unlabelled track doesn't count here). If none has one, the first release plays as it is.
+Many releases have no subtitles at all (small x265 WEBRips especially). When the best-ranked release that plays has none, Basic Cable probes up to two more releases ranked level with it (same resolution, HDR, preferred words, and cached on your debrid service) and uses the first one with a subtitle track tagged English (an unlabelled track doesn't count here). If none has one, the first release plays as it is.
 
 How the track reaches the player depends on its format and the channel's **English subtitles** setting:
 
@@ -128,7 +130,7 @@ How the track reaches the player depends on its format and the channel's **Engli
 - **Caption tracks** cost almost nothing: ffmpeg turns them into WebVTT alongside the video. The channel's `index.m3u8` becomes an HLS master playlist with an "English" track marked default, and players can turn it off. It also declares that the video carries no closed captions, so ExoPlayer-based players (Stremio on Android TV) don't add an empty "Unknown" caption track. Captions embedded in the video itself (CEA-608) aren't offered.
 - **Burning in** means re-encoding the video with x264. Expect real 1080p content to keep a few CPU cores busy per channel. 4K sources are scaled to 1080p first. Lower `SUBTITLE_BURN_PRESET` (for example `superfast` or `ultrafast`) if a channel can't keep up. Set the channel to **Selectable track only** to never re-encode.
 - Subtitle files that sit next to the video in a torrent can't be used. Debrid links point at the video file alone.
-- Subtitles need ffmpeg 7.x. ffmpeg 8.0's real-time pacing slows to about half speed when a subtitle stream is included, so on 8.x StreamTube plays without subtitles and logs a warning. The Docker image ships 7.1.
+- Subtitles need ffmpeg 7.x. ffmpeg 8.0's real-time pacing slows to about half speed when a subtitle stream is included, so on 8.x Basic Cable plays without subtitles and logs a warning. The Docker image ships 7.1.
 
 ## Commercials
 
@@ -152,11 +154,11 @@ How breaks fit the live guide:
 
 **Bulk loading:** clips live under `commercials/<bundle>/` in the data volume. To load many at once, copy them into those folders (or bind-mount a host folder on `/data/commercials`) and press **Scan for new files**. Files deleted from a folder drop out of the library on the next scan.
 
-**Backups and MCP:** backups keep each channel's commercial settings but not the clips, so copy the `commercials` folder separately if you move installs. Over MCP, `streamtube_list_commercials` shows the library, and `streamtube_update_channel` takes `commercials_per_break` and `commercial_bundles`.
+**Backups and MCP:** backups keep each channel's commercial settings but not the clips, so copy the `commercials` folder separately if you move installs. Over MCP, `basiccable_list_commercials` shows the library, and `basiccable_update_channel` takes `commercials_per_break` and `commercial_bundles`.
 
 ## Backup and restore
 
-**Settings → Backup & restore** downloads a `streamtube-backup-<date>.json` file. It holds:
+**Settings → Backup & restore** downloads a `basiccable-backup-<date>.json` file. It holds:
 
 - Every channel and its options.
 - The auto-fill pool, including wildcards and any matches you unticked.
@@ -179,16 +181,16 @@ The same thing is available from the API: `GET /api/backup` (add `?settings=1` t
 
 Each watched channel keeps its read-ahead buffer and the last minute of published video in `HLS_DIR`. At 1080p that's around 250 MB per channel; a 4K remux can take about 1 GB. The data is rewritten constantly, so RAM is the right place for it.
 
-- **docker compose:** the included `docker-compose.yml` mounts a 2 GB tmpfs at `/tmp/streamtube-hls`, the default `HLS_DIR`. Don't set `HLS_DIR` yourself.
-- **docker run:** add `--tmpfs /tmp/streamtube-hls:size=2g`.
-- **Portainer, single container:** Portainer's container form has no tmpfs option, but every container has a RAM-backed `/dev/shm`. Under **Advanced container settings → Runtime & Resources**, set **Shared memory size** to 2048 MB. Then set the environment variable `HLS_DIR=/dev/shm/streamtube-hls`.
+- **docker compose:** the included `docker-compose.yml` mounts a 2 GB tmpfs at `/tmp/basiccable-hls`, the default `HLS_DIR`. Don't set `HLS_DIR` yourself.
+- **docker run:** add `--tmpfs /tmp/basiccable-hls:size=2g`.
+- **Portainer, single container:** Portainer's container form has no tmpfs option, but every container has a RAM-backed `/dev/shm`. Under **Advanced container settings → Runtime & Resources**, set **Shared memory size** to 2048 MB. Then set the environment variable `HLS_DIR=/dev/shm/basiccable-hls`.
 - **Portainer, as a stack:** paste the compose file under **Stacks → Add stack** and you get the tmpfs mount as-is.
 
 Size it for the channels you'll watch at once. Too small isn't fatal: the read-ahead shrinks when space runs low.
 
 ## Fast tune-in
 
-Without help, opening a channel waits for every stream addon to answer, then checks the chosen file. With slow addons that adds several seconds. So once a minute StreamTube prepares, on every enabled channel, whatever is on now and whatever starts in the next **Prepare streams ahead** minutes (Settings, default 10):
+Without help, opening a channel waits for every stream addon to answer, then checks the chosen file. With slow addons that adds several seconds. So once a minute Basic Cable prepares, on every enabled channel, whatever is on now and whatever starts in the next **Prepare streams ahead** minutes (Settings, default 10):
 
 1. It asks the addons for streams and ranks them.
 2. It checks the top file is reachable and real (not a debrid "downloading" placeholder).
@@ -200,7 +202,7 @@ Preparing also reveals the file's real length, and the program's guide slot is s
 
 ### Episodes with nothing playable
 
-Sometimes no addon has a usable copy: every result is uncached, torrent-only or filtered out. When that happens, StreamTube puts something else in that spot, chosen by the channel's usual rules:
+Sometimes no addon has a usable copy: every result is uncached, torrent-only or filtered out. When that happens, Basic Cable puts something else in that spot, chosen by the channel's usual rules:
 
 - **In-order channels** play the next episode, and the show continues from there.
 - **Random channels** pick another random episode.
@@ -210,7 +212,7 @@ An upcoming program is swapped before it airs. One already on air is cut off and
 
 A skipped episode isn't scheduled again for 6 hours, after which it gets another chance, since debrid caches change.
 
-Outages aren't mistaken for missing episodes. StreamTube skips nothing and retries later in these cases:
+Outages aren't mistaken for missing episodes. Basic Cable skips nothing and retries later in these cases:
 - **No addon answers at all.**
 - **An addon fails and the others have nothing usable.** "Fails" includes answering with only a notice, such as a rate-limit message in place of real streams.
 - **Everything on the channel failed recently.** The channel keeps its guide and keeps retrying instead of skipping through its whole lineup, so it never ends up with nothing on.
@@ -230,13 +232,13 @@ With **One stream per viewer IP** on (Settings, on by default), each device watc
 - If an old player keeps asking for the channel you left, it gets an error instead of restarting it.
 - Other devices are unaffected. Two TVs can watch two channels, or the same one.
 
-The cap covers the live channel streams. **Start over** links go straight to your debrid service, so StreamTube doesn't see them.
+The cap covers the live channel streams. **Start over** links go straight to your debrid service, so Basic Cable doesn't see them.
 
-If StreamTube is behind a reverse proxy, set `TRUST_PROXY=1`. Otherwise every viewer shares the proxy's IP and counts as one device.
+If Basic Cable is behind a reverse proxy, set `TRUST_PROXY=1`. Otherwise every viewer shares the proxy's IP and counts as one device.
 
 ## MCP server
 
-StreamTube includes an [MCP](https://modelcontextprotocol.io) server at `/mcp` (Streamable HTTP). With it, an assistant such as Claude Code can manage everything from plain-language requests:
+Basic Cable includes an [MCP](https://modelcontextprotocol.io) server at `/mcp` (Streamable HTTP). With it, an assistant such as Claude Code can manage everything from plain-language requests:
 
 > Make a channel called Saturday Cartoons with Animaniacs, Pinky and the Brain and Batman: The Animated Series, 720p, and put Pokémon on Saturdays 8 to 10am.
 >
@@ -249,20 +251,20 @@ StreamTube includes an [MCP](https://modelcontextprotocol.io) server at `/mcp` (
 **Connect Claude Code:**
 
 ```bash
-claude mcp add --transport http streamtube http://<server>:7000/mcp
+claude mcp add --transport http basiccable http://<server>:7000/mcp
 ```
 
-If you set `ADMIN_PASSWORD`, add `--header "Authorization: Bearer <password>"` (Basic auth works too). This repo's `.mcp.json` registers the server for Claude Code sessions opened here. It reads the address from `STREAMTUBE_MCP_URL` and the password from `STREAMTUBE_TOKEN` if they're set.
+If you set `ADMIN_PASSWORD`, add `--header "Authorization: Bearer <password>"` (Basic auth works too). This repo's `.mcp.json` registers the server for Claude Code sessions opened here. It reads the address from `BASICCABLE_MCP_URL` and the password from `BASICCABLE_TOKEN` if they're set.
 
 | Area | Tools |
 |---|---|
-| Look around | `streamtube_list_channels`, `streamtube_get_channel`, `streamtube_get_guide`, `streamtube_whats_on`, `streamtube_recently_shown`, `streamtube_list_commercials`, `streamtube_server_status` |
-| Channels | `streamtube_create_channel` (settings, pool and slots in one call), `streamtube_update_channel`, `streamtube_bulk_update_channels`, `streamtube_delete_channel` |
-| Pool & slots | `streamtube_add_to_pool`, `streamtube_remove_from_pool`, `streamtube_set_wildcard_exclusions`, `streamtube_add_slots`, `streamtube_remove_slots` |
-| Titles | `streamtube_search_titles`, `streamtube_preview_wildcard` |
-| Playback | `streamtube_skip_current`, `streamtube_check_streams`, `streamtube_rebuild_guide` |
-| Addons & settings | `streamtube_get_settings` (addon keys hidden unless asked), `streamtube_add_stream_addon`, `streamtube_remove_stream_addon`, `streamtube_test_stream_addons`, `streamtube_update_settings` |
-| Backups | `streamtube_export_backup`, `streamtube_import_backup` |
+| Look around | `basiccable_list_channels`, `basiccable_get_channel`, `basiccable_get_guide`, `basiccable_whats_on`, `basiccable_recently_shown`, `basiccable_list_commercials`, `basiccable_server_status` |
+| Channels | `basiccable_create_channel` (settings, pool and slots in one call), `basiccable_update_channel`, `basiccable_bulk_update_channels`, `basiccable_delete_channel` |
+| Pool & slots | `basiccable_add_to_pool`, `basiccable_remove_from_pool`, `basiccable_set_wildcard_exclusions`, `basiccable_add_slots`, `basiccable_remove_slots` |
+| Titles | `basiccable_search_titles`, `basiccable_preview_wildcard` |
+| Playback | `basiccable_skip_current`, `basiccable_check_streams`, `basiccable_rebuild_guide` |
+| Addons & settings | `basiccable_get_settings` (addon keys hidden unless asked), `basiccable_add_stream_addon`, `basiccable_remove_stream_addon`, `basiccable_test_stream_addons`, `basiccable_update_settings` |
+| Backups | `basiccable_export_backup`, `basiccable_import_backup` |
 
 The tools take things the way people say them:
 
@@ -318,7 +320,7 @@ GitHub Actions runs the tests on every push and pull request (`.github/workflows
 
 ## Disclaimer
 
-StreamTube does not host, index, provide or distribute media files of any kind. It schedules and plays whatever the Stremio stream addons and services you configure return. You are responsible for which addons and services you use and how you use them, and for having the rights to stream the files they provide. StreamTube is not affiliated with Stremio or any addon or debrid service.
+Basic Cable does not host, index, provide or distribute media files of any kind. It schedules and plays whatever the Stremio stream addons and services you configure return. You are responsible for which addons and services you use and how you use them, and for having the rights to stream the files they provide. Basic Cable is not affiliated with Stremio or any addon or debrid service.
 
 ## License
 

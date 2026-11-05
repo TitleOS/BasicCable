@@ -1,4 +1,4 @@
-// StreamTube web UI — no build step, no framework.
+// Basic Cable web UI — no build step, no framework.
 
 const $view = document.getElementById('view');
 const state = { info: null, offset: 0, tz: undefined, view: null, timers: [] };
@@ -78,7 +78,7 @@ document.getElementById('modal').addEventListener('click', (e) => { if (e.target
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
 function stremioLink(channelId) {
-  return `stremio:///detail/tv/${encodeURIComponent(`streamtube:${channelId}`)}/${encodeURIComponent(`streamtube:${channelId}`)}`;
+  return `stremio:///detail/tv/${encodeURIComponent(`basiccable:${channelId}`)}/${encodeURIComponent(`basiccable:${channelId}`)}`;
 }
 
 // ---------------------------------------------------------------- clock
@@ -709,7 +709,7 @@ async function viewSettings() {
       h('h2', {}, 'Debrid stream addons'),
       h('p', { class: 'hint', style: { marginTop: '-6px', marginBottom: '10px' } },
         'Paste the manifest URL of each Stremio addon you have configured with your debrid service, one per line. ',
-        'Your debrid key is already part of that URL. StreamTube asks all of them and only uses cached, direct links.'),
+        'Your debrid key is already part of that URL. Basic Cable asks all of them and only uses cached, direct links.'),
       addons,
       h('div', { class: 'row', style: { marginTop: '10px' } }, h('button', { class: 'btn', onclick: (e) => test(e.currentTarget) }, 'Test addons')),
       testOut),
@@ -748,7 +748,7 @@ function backupPanel() {
     if (!f) return;
     try {
       backup = JSON.parse(await f.text());
-      if (backup.app !== 'streamtube' || !Array.isArray(backup.channels)) throw new Error("That file isn't a StreamTube backup");
+      if (!['basiccable', 'streamtube'].includes(backup.app) || !Array.isArray(backup.channels)) throw new Error("That file isn't a Basic Cable backup");
       preview.textContent = `${backup.channels.length} channel${backup.channels.length === 1 ? '' : 's'}: ${backup.channels.map((c) => c.name).join(', ')}` +
         (backup.settings ? ' · includes settings' : '');
     } catch (e) {
@@ -766,7 +766,7 @@ function backupPanel() {
   return h('div', { class: 'panel', style: { marginTop: '16px' } },
     h('h2', {}, 'Backup & restore'),
     h('p', { class: 'hint', style: { marginTop: '-6px', marginBottom: '12px' } },
-      'Channels, auto-fill pools, wildcards, time slots and where each show left off, as one JSON file you can import into another StreamTube.'),
+      'Channels, auto-fill pools, wildcards, time slots and where each show left off, as one JSON file you can import into another Basic Cable.'),
     h('div', { class: 'row' },
       h('button', { class: 'btn', onclick: download }, 'Download backup'),
       h('label', { class: 'check' }, withSettings, 'Include settings (contains your debrid addon URLs and keys)')),
@@ -789,14 +789,14 @@ async function viewConnect() {
       h('button', { class: 'btn', onclick: async () => { try { await navigator.clipboard.writeText(value); toast('Copied'); } catch { toast('Select the text and copy it manually', true); } } }, 'Copy'), extra));
   const local = /\/\/(localhost|127\.0\.0\.1)/.test(i.manifestUrl);
   $view.replaceChildren(
-    h('h1', {}, 'Connect'), h('p', { class: 'sub' }, 'Add StreamTube to Stremio or any IPTV player.'),
+    h('h1', {}, 'Connect'), h('p', { class: 'sub' }, 'Add Basic Cable to Stremio or any IPTV player.'),
     h('div', { class: 'panel' },
       h('h2', {}, 'Stremio'),
       local ? h('p', { class: 'hint', style: { color: 'var(--warn)' } }, 'You opened this page via localhost, so this URL only works on this machine. Open the web UI through the server\'s LAN address (or set the Public URL in Settings) to get a link other devices can use.') : null,
       copyRow('Addon manifest URL', i.manifestUrl, i.manifestUrl.startsWith('https://') ? h('a', { class: 'btn primary', href: i.manifestUrl.replace(/^https:\/\//, 'stremio://') }, 'Install') : null),
       i.manifestUrl.startsWith('https://') ? null : h('p', { class: 'hint' }, 'To install, copy this URL, open Stremio → Addons, paste it into the search box at the top and press Install. (A one-click link only works for https addresses.)'),
-      h('p', { class: 'hint' }, 'Channels appear under Discover → TV → StreamTube. Opening a channel joins whatever is on, at the current point in the episode. The "Start over" stream plays the current program from the beginning.'),
-      h('p', { class: 'hint' }, 'Stremio desktop, Android and Android TV accept a plain http:// LAN address. Stremio Web (web.stremio.com) requires https — put StreamTube behind a reverse proxy with a certificate if you use it there.')),
+      h('p', { class: 'hint' }, 'Channels appear under Discover → TV → Basic Cable. Opening a channel joins whatever is on, at the current point in the episode. The "Start over" stream plays the current program from the beginning.'),
+      h('p', { class: 'hint' }, 'Stremio desktop, Android and Android TV accept a plain http:// LAN address. Stremio Web (web.stremio.com) requires https — put Basic Cable behind a reverse proxy with a certificate if you use it there.')),
     h('div', { class: 'panel' },
       h('h2', {}, 'IPTV players (VLC, Kodi, TiviMate, Jellyfin, Plex…)'),
       copyRow('M3U playlist', i.m3uUrl),
