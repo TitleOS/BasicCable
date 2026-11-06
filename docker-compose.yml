@@ -1,7 +1,7 @@
 services:
   basiccable:
-    build: .
-    image: basiccable:latest
+    image: ghcr.io/titleos/basiccable:latest
+    # To build from a checkout of the repo instead, replace the line above with "build: .".
     container_name: basiccable
     restart: unless-stopped
     ports:

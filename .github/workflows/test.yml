@@ -1,10 +1,13 @@
-# Runs the test suite on every push and pull request. ffmpeg is installed so the playout tests run too.
+# Runs the test suite on pull requests and on pushes to other branches. ffmpeg is installed so the playout
+# tests run too. Pushes to main and release tags run it through docker.yml, before the image is published.
 
 name: Tests
 
 on:
   push:
+    branches-ignore: [main]
   pull_request:
+  workflow_call:
 
 jobs:
   test:

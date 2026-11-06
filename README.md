@@ -56,9 +56,23 @@ Failed segment and playlist requests are logged as warnings, which makes player 
 
 ## Quick start
 
+Images for amd64 and arm64 are published to `ghcr.io/titleos/basiccable`. Download the compose file, set `TZ` and `ADMIN_PASSWORD` in it, and start it:
+
 ```bash
-docker compose up -d --build
+curl -O https://raw.githubusercontent.com/TitleOS/BasicCable/main/docker-compose.yml
+docker compose up -d
 ```
+
+Or with `docker run`:
+
+```bash
+docker run -d --name basiccable --restart unless-stopped -p 7000:7000 \
+  -e TZ=America/New_York -e ADMIN_PASSWORD=change-me \
+  -v basiccable-data:/data --tmpfs /tmp/basiccable-hls:size=2g \
+  ghcr.io/titleos/basiccable:latest
+```
+
+`:latest` follows the main branch. Release tags are also published as versions (`:0.2.0`, `:0.2`) if you'd rather pin one.
 
 Open `http://<server-ip>:7000` from a device on your network.
 
@@ -322,6 +336,8 @@ npm start          # http://localhost:7000, data in ./data
 npm test
 ```
 
+To run your own build in Docker, replace the `image:` line in `docker-compose.yml` with `build: .` and run `docker compose up -d --build`.
+
 `test/mock-addon.js` is a fake debrid stream addon that serves one local video file with HTTP Range support, for testing playback without a debrid account:
 
 ```bash
@@ -338,7 +354,7 @@ MCP_URL=http://localhost:7000/mcp ADDON_URL=http://localhost:7099/manifest.json 
 
 Requires Node 22.13 or newer (for the built-in `node:sqlite`) and ffmpeg 6.1 or newer on the PATH. Older ffmpeg versions work but tune in more slowly. For subtitles, use ffmpeg 7.x; see [Subtitles](#subtitles).
 
-GitHub Actions runs the tests on every push and pull request (`.github/workflows/test.yml`). `.forgejo/workflows/docker-build-push.yml` is an example deploy pipeline for a self-hosted Forgejo. It runs the tests, builds the image, scans it with Trivy (a fixable CRITICAL finding blocks the push) and pushes `:<short sha>` and `:latest` to the registry set in the `REGISTRY` repository variable.
+GitHub Actions runs the tests on pull requests and other branches (`.github/workflows/test.yml`). On pushes to main and on `v*` tags, `.github/workflows/docker.yml` runs the tests, builds the image for amd64 and arm64, scans it with Trivy (a fixable CRITICAL finding stops the publish) and pushes it to GHCR. `.forgejo/workflows/docker-build-push.yml` is the same pipeline for a self-hosted Forgejo, pushing `:<short sha>` and `:latest` to the registry set in the `REGISTRY` repository variable.
 
 ## Disclaimer
 

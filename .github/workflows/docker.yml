@@ -1,0 +1,89 @@
+# Builds the Docker image and publishes it to GitHub Container Registry (ghcr.io/<owner>/basiccable) for amd64
+# and arm64, after the tests pass.
+#
+#   push to main       -> :latest and :<short sha>
+#   tag v1.2.3         -> :1.2.3 and :1.2
+#
+# Trivy gates the push like the Forgejo pipeline: a CRITICAL vulnerability with a known fix stops the job before
+# anything is published. A new package on GHCR starts out private; make it public once in its package settings.
+
+name: Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name and build date
+        id: vars
+        run: |
+          # GHCR names must be lower case; the owner here is "TitleOS".
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/basiccable" >> "$GITHUB_OUTPUT"
+          # Rebuilds the image's Debian security upgrade layer at least daily (see the Dockerfile).
+          echo "apt_day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=,format=short,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=Basic Cable
+            org.opencontainers.image.description=Virtual live TV channels for Stremio, streamed through your debrid addons
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # amd64 first, loaded locally so Trivy can scan it before anything is pushed.
+      - name: Build for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: APT_DAY=${{ steps.vars.outputs.apt_day }}
+          load: true
+          tags: basiccable:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan with Trivy
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.75.0 image --severity CRITICAL --ignore-unfixed --exit-code 1 basiccable:scan
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both platforms; amd64 comes from the cache of the build above.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: APT_DAY=${{ steps.vars.outputs.apt_day }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
