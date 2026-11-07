@@ -15,6 +15,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY public ./public
+COPY docker-entrypoint.sh /usr/local/bin/basiccable-entrypoint
+RUN chmod 755 /usr/local/bin/basiccable-entrypoint
 
 ENV NODE_ENV=production \
     PORT=7000 \
@@ -26,4 +28,6 @@ EXPOSE 7000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||7000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+# Starts as root only to hand /data and HLS_DIR to the "node" user, then runs Basic Cable as that user.
+ENTRYPOINT ["basiccable-entrypoint"]
 CMD ["node", "--disable-warning=ExperimentalWarning", "src/index.js"]

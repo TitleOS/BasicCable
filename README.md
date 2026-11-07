@@ -92,7 +92,7 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 |---|---|---|
 | `TZ` | `UTC` in the compose file, otherwise the system's | Timezone for the guide and time slots, as an IANA name such as `America/New_York` or `Europe/London`. Change it to yours: with UTC, a "weeknights 8 PM" slot airs at 8 PM UTC. It can also be changed in Settings. |
 | `PORT` | `7000` | |
-| `BASE_URL` | *(from request)* | Public address used in stream and playlist URLs. |
+| `BASE_URL` | *(from request)* | Public address used in stream and playlist URLs. Without `ADMIN_PASSWORD`, the web UI only works through an IP address, a single-word host name, a home-network name (`.lan`, `.local`, `.home.arpa`...) or this address. |
 | `ADMIN_PASSWORD` | *(none)* | Protects the web UI, its API and the MCP server with HTTP basic auth (any user name). Set one; see [Security](#security). The addon, live and playlist endpoints stay open because Stremio and IPTV apps can't log in. |
 | `DATA_DIR` | `/data` | SQLite database. |
 | `HLS_DIR` | `/tmp/basiccable-hls` | Live segments and the read-ahead buffer. Put it on a tmpfs (RAM); see [Keeping segments in RAM](#keeping-segments-in-ram). |
@@ -100,14 +100,17 @@ The desktop, Android and Android TV apps accept plain `http://` LAN addresses. *
 | `READ_AHEAD_MB` | `300` | Per-channel cap on the read-ahead buffer. It also never uses more than a quarter of the free space in `HLS_DIR`, which limits how far ahead a 4K remux reads. |
 | `GUIDE_HOURS` | `48` | How far ahead the guide is planned. |
 | `IDLE_SECONDS` | `60` | How long a channel keeps running after its last viewer leaves. |
-| `TRUST_PROXY` | *(off)* | Set to `1` behind your own reverse proxy to read viewer IPs from `X-Forwarded-For`. Otherwise every viewer appears to be the proxy. |
+| `TRUST_PROXY` | *(off)* | Set to `1` behind your own reverse proxy to read viewer IPs from `X-Forwarded-For`, and the public address from `X-Forwarded-Host` and `X-Forwarded-Proto`. Otherwise every viewer appears to be the proxy. Leave it off when nothing sits in front of Basic Cable. |
 | `SUBTITLE_BURN_PRESET` | `veryfast` | x264 preset for re-encoding (burned-in subtitles, the "Up next" box). Faster presets use less CPU and look worse. |
 
 ## Security
 
 - Set `ADMIN_PASSWORD`. Without it, anyone who can reach the port can change channels and settings and read your stream addon URLs, which usually contain your debrid key. Basic Cable logs a warning at startup when it listens on all interfaces with no password.
 - Some endpoints are always open, because Stremio and IPTV apps can't log in: the addon (`/manifest.json`, `/catalog`, `/meta`, `/stream`), the live streams (`/live`), `/direct`, `/playlist.m3u`, `/epg.xml` and channel art. Anyone who can reach them can watch your channels, using your debrid account.
+- After 10 wrong passwords in 15 minutes, an IP address is refused for 15 minutes, right password or not. Behind a reverse proxy, set `TRUST_PROXY=1` so this applies per viewer and not to the proxy as a whole.
 - The web UI's API and the MCP server refuse browser requests from pages Basic Cable didn't serve. Another website open in a browser on your network can't read or change anything. If a reverse proxy rewrites the `Host` header, set **Public URL** (or `BASE_URL`), or set `TRUST_PROXY=1` to use `X-Forwarded-Host`.
+- Without a password, the web UI's API also only answers when you reach it by IP address, a single-word host name, a home-network name (`.lan`, `.local`, `.home.arpa`, `.internal`...) or the Public URL / `BASE_URL`. If you use another domain name on your network, set `BASE_URL` to it, or set a password.
+- The Docker image runs Basic Cable as the unprivileged `node` user. It starts as root only long enough to give that user the data and segment folders, so volumes from older images keep working. To skip that step, run it with `--user 1000:1000` and make sure that user can write to `/data`.
 - If you expose Basic Cable to the internet, put it behind a reverse proxy that adds TLS and its own access control (an allow-list, a VPN such as Tailscale, or an authenticating proxy), and keep `ADMIN_PASSWORD` set.
 - Log lines keep only the host of any URL (`https://addon.example/…`). Logs can be pasted into a bug report without leaking addon URLs or debrid links.
 

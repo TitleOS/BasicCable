@@ -2,7 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, log } from './config.js';
-import { Router, send, serveStatic, checkAuth, clientIp, sameOrigin, HttpError } from './http.js';
+import { Router, send, serveStatic, authorize, clientIp, sameOrigin, trustedHost, HttpError } from './http.js';
 import { registerAddon } from './addon.js';
 import { registerApi } from './api.js';
 import { startScheduler } from './scheduler.js';
@@ -22,6 +22,22 @@ registerAddon(router);
 registerApi(router);
 router.get('/health', (req, res) => send(res, 200, { ok: true }));
 
+const CHALLENGE = { 'www-authenticate': 'Basic realm="Basic Cable"' };
+
+/** Whether the request may use password-protected routes; if not, answers it (401, or 429 after too many wrong passwords). */
+function allowed(req, res, body = { error: 'Authentication required' }) {
+  const a = authorize(req);
+  if (a.result === 'ok') return true;
+  if (a.result === 'locked') {
+    if (a.justLocked) log.warn(`too many wrong passwords from ${clientIp(req)}; refusing it for ${Math.round(a.retryAfter / 60)} minutes`);
+    send(res, 429, typeof body === 'string' ? 'Too many wrong passwords, try again later' : { error: 'Too many wrong passwords, try again later' },
+      { 'retry-after': String(a.retryAfter) });
+  } else {
+    send(res, 401, body, CHALLENGE);
+  }
+  return false;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
   const pathname = url.pathname;
@@ -39,32 +55,35 @@ const server = http.createServer(async (req, res) => {
   // call them from a browser, so another website open on the same network can't read or drive them. Everything
   // else (the Stremio addon, live streams, playlists, art) is open to any origin, as Stremio Web and web
   // players need.
+  // Without a password, the Host header must also be a name only this network can use: otherwise a website
+  // could point its own domain at this server's address, and the browser would treat Basic Cable as that site.
   const admin = pathname === '/mcp' || pathname.startsWith('/api/');
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('referrer-policy', 'no-referrer');
   if (admin && !sameOrigin(req)) return send(res, 403, { error: 'Origin not allowed' });
+  if (admin && !config.adminPassword && !trustedHost(req)) {
+    return send(res, 403, { error: `Unknown host name "${req.headers.host}". Set BASE_URL to the address you use for Basic Cable, or set ADMIN_PASSWORD.` });
+  }
   if (!admin) {
     res.setHeader('access-control-allow-origin', '*');
     res.setHeader('access-control-allow-headers', '*');
   }
   if (pathname === '/mcp') {
     // MCP endpoint for assistants (Claude Code etc.). Same password as the web UI when one is set.
-    if (!checkAuth(req)) return send(res, 401, { error: 'Authentication required' }, { 'www-authenticate': 'Basic realm="Basic Cable"' });
+    if (!allowed(req, res)) return;
     return mcpHandler(req, res);
   }
   if (req.method === 'OPTIONS') return send(res, 204, '');
   try {
     const m = router.match(req.method, pathname);
     if (m) {
-      if (m.route.auth && !checkAuth(req)) {
-        return send(res, 401, { error: 'Authentication required' }, { 'www-authenticate': 'Basic realm="Basic Cable"' });
-      }
+      if (m.route.auth && !allowed(req, res)) return;
       await m.route.handler(req, res, m.params);
       return;
     }
     if (req.method === 'GET' || req.method === 'HEAD') {
       const isUi = !pathname.startsWith('/api/');
-      if (isUi && config.adminPassword && !checkAuth(req) && pathname !== '/icon.svg') {
-        return send(res, 401, 'Authentication required', { 'www-authenticate': 'Basic realm="Basic Cable"' });
-      }
+      if (isUi && pathname !== '/icon.svg' && !allowed(req, res, 'Authentication required')) return;
       if (serveStatic(publicDir, req, res, pathname)) return;
     }
     throw new HttpError(404, 'Not found');
