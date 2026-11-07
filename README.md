@@ -228,7 +228,7 @@ Tick the sources to read (Associated Press, NPR, PBS News Hour) and add any RSS 
 - Bing's picture of the day behind it, with its credit in the corner: the last eight pictures are kept in `news/bing/` in the data volume and the channel cycles through them, one per song. When Bing can't be reached the channel falls back to a plain background;
 - the song playing, and the date and time, along the bottom.
 
-The music is a set of jazz recordings by the US Air Force's jazz ensembles (the Airmen of Note, Shades of Blue, Dimensions in Blue, the Dixie Players): US government recordings, so public domain. It plays quietly, about 9 dB under the weather channel. The set is listed in `src/musicsets.js` and downloaded once into `music/jazz/` (about 420 MB to download, 240 MB kept); your own files go in `music/jazz/own/`. A moving bar costs more than a still picture: while someone is watching, the channel takes about 60% of a CPU core at 1080p.
+The music is a set of jazz recordings by the US Air Force's jazz ensembles (the Airmen of Note, Shades of Blue, Dimensions in Blue, the Dixie Players): US government recordings, so public domain. It plays quietly, about 9 dB under the weather channel. The set is listed in `src/musicsets.js` and downloaded once into `music/jazz/` (about 420 MB to download, 300 MB kept); your own files go in `music/jazz/own/`. A moving bar costs more than a still picture: while someone is watching, the channel takes about 60% of a CPU core at 1080p.
 
 ## Restarts
 
