@@ -4,6 +4,7 @@ import { config, log } from './config.js';
 import { getMeta, playableEpisodes, expandWildcard, episodeRuntime } from './metadata.js';
 import { lastShown, noRepeatDays } from './history.js';
 import { breakAllowance } from './commercials.js';
+import { utilityOf, utilityRows } from './utilities.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -380,6 +381,23 @@ async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = 
   if (!channel) return;
   const zone = store.getSettings().timezone || config.timezone;
   const horizon = now + config.horizonHours * HOUR;
+
+  // Generated channels (the weather...) have no titles: their guide is hourly blocks out to the horizon.
+  if (utilityOf(channel)) {
+    return store.tx(() => {
+      if (rebuild) store.run('DELETE FROM epg WHERE channel_id = ? AND start > ?', channelId, now);
+      store.run('DELETE FROM epg WHERE channel_id = ? AND end < ?', channelId, now - 48 * HOUR);
+      const last = store.epgLast(channelId);
+      const t = last && last.end > now ? last.end : Math.max(DateTime.fromMillis(now, { zone }).startOf('hour').toMillis(), last?.end ?? 0);
+      if (t >= horizon) return true;
+      const ins = store.db.prepare(`INSERT INTO epg(channel_id, start, end, type, meta_id, video_id, title, episode_title, season, episode, poster, background, description, origin, truncated, cursor_prev)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const r of utilityRows(channel, t, horizon, zone)) {
+        ins.run(channelId, r.start, r.end, r.type, r.meta_id, r.video_id, r.title, r.episode_title, r.season, r.episode, r.poster, r.background, r.description, r.origin, r.truncated, '{}');
+      }
+      return true;
+    });
+  }
 
   const sources = store.listSources(channelId);
   const slots = store.listSlots(channelId);

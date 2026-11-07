@@ -4,11 +4,13 @@ import { spawn, execFile } from 'node:child_process';
 import { config, log, redact } from './config.js';
 import { store } from './db.js';
 import { headerArgs } from './probe.js';
-import { prepareStream, dropPrepared, skipUnplayable, preparedFor, fitGuideToFile } from './prefetch.js';
+import { prepareStream, dropPrepared, skipUnplayable, preparedFor, fitGuideToFile, seedPrepared } from './prefetch.js';
 import { buildChannel, itemLabel, retimeFrom } from './scheduler.js';
 import { subtitlePlan, burnFilter } from './subtitles.js';
 import { UP_NEXT_SECONDS, upNextFont, upNextText, upNextFilter } from './upnext.js';
 import { perBreak, clipsFor, pickBreak, readyFile } from './commercials.js';
+import { utilityOf, renderUtilityFrame } from './utilities.js';
+import { pickTrack, trackPath, trackLabel } from './music.js';
 
 // Read-ahead: ffmpeg reads up to READ_AHEAD_SECONDS ahead of real time, but each segment only appears in the
 // live playlist when its moment in the schedule arrives. Viewers stay on real time and in step with the guide,
@@ -32,7 +34,12 @@ const RETIME_MS = 3000; // a program starting this far off its guide time moves 
 const MAX_LATE_RETIME_MS = 5 * 60 * 1000; // a later start than this joins the program part-way instead
 const MIN_BREAK_GAP_MS = 10000; // a gap shorter than this before the next program isn't worth a commercial
 const recentAds = new Map(); // channel id -> clip ids played lately, newest last (outlives a channel restart)
+const recentTracks = new Map(); // channel id -> music track ids played lately, newest last
 const BURN_PRESET = process.env.SUBTITLE_BURN_PRESET || 'veryfast';
+// A channel's saved position (playout_state) is only trusted this long after it was written: debrid links
+// expire, and an old row could point at a long-gone program anyway.
+const STATE_MAX_AGE_MS = 6 * 3600 * 1000;
+const STATE_SAVE_MS = 15000;
 const EMPTY_VTT = 'WEBVTT\n\n';
 // ffmpeg writes WebVTT cue times on the same output timeline as the video (including -output_ts_offset), and
 // its MPEG-TS muxer puts that timeline's zero at 1.4s (126000 at 90 kHz). So cue time 0 always maps to 126000.
@@ -217,7 +224,7 @@ export class ChannelRunner {
         continue; // look at the guide again: it may have changed during the break
       }
       if (item.id !== failItem) { failItem = item.id; fails = 0; }
-      const result = await this.playItem(item, { following });
+      const result = item.type === 'utility' ? await this.playUtility(item) : await this.playItem(item, { following });
       following = result === 'done';
       if (this.stopped) break;
       // Re-read it: starting it may have moved it in the guide.
@@ -249,6 +256,8 @@ export class ChannelRunner {
         return undefined;
       }
     };
+    // After a restart, the stream this channel was playing before is used again, without asking the addons.
+    const restored = !preparedFor(item, channel) && this.restoreState(item, channel);
     let prep;
     if (this.segments.length && !preparedFor(item, channel)) {
       // Mid-session and the next program isn't ready. The buffer usually covers the wait; if it runs low, keep
@@ -341,7 +350,7 @@ export class ChannelRunner {
       log.info(`channel ${channel.number}: ${resumeAt != null ? 'resuming' : 'playing'} ${itemLabel(item)} from ${Math.round(startAt)}s @ ${info.video?.height || '?'}p` +
         (transcode || overlay ? ', re-encoding video' : '') + (overlay ? `, "Up next" box${upNext.from > 0 ? ` from ${Math.round(startAt + upNext.from)}s` : ''}` : '') +
         (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''})` : '') +
-        (attempt === 0 ? (waited < 200 ? ', stream was prepared ahead' : `, stream picked in ${(waited / 1000).toFixed(1)}s`) : ''));
+        (attempt === 0 ? (restored && prep.restored ? ', same stream as before the restart' : waited < 200 ? ', stream was prepared ahead' : `, stream picked in ${(waited / 1000).toFixed(1)}s`) : ''));
       if (this.skipRequested) {
         // Skipped while we were still getting the stream ready.
         this.skipRequested = false;
@@ -349,8 +358,17 @@ export class ChannelRunner {
       }
       // (HDR video stays copied: re-encoding it here would flatten its colours.)
       const copying = !transcode && !overlay && subs?.delivery !== 'burn' && !hdr;
-      const produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, runLimit, subs, { transcode, burst, overlay }),
-        { vtt: subs?.delivery === 'vtt', maxSegment: copying ? LONG_SEGMENT_SECONDS : 0 });
+      // Remember where we are every few seconds, so a restart carries on with this very stream.
+      const contentAtStart = this.contentTotal;
+      this.saveState(item, cand, info, startAt, transcode);
+      const saver = setInterval(() => this.saveState(item, cand, info, startAt + (this.contentTotal - contentAtStart), transcode), STATE_SAVE_MS);
+      let produced;
+      try {
+        produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, runLimit, subs, { transcode, burst, overlay }),
+          { vtt: subs?.delivery === 'vtt', maxSegment: copying ? LONG_SEGMENT_SECONDS : 0 });
+      } finally {
+        clearInterval(saver);
+      }
       if (this.stopped) return 'done';
       if (produced.longSegment && !this.skipRequested) {
         // Keyframes too far apart to copy: carry on from the start of the long segment (it was thrown away
@@ -403,6 +421,101 @@ export class ChannelRunner {
     if (await skipUnplayable(item, channel, { at: this.clock() })) return 'skipped';
     this.setStatus({ state: 'error', message: 'Every candidate stream failed to play' });
     return 'failed';
+  }
+
+  /** Write the channel's position and stream to the database (see restoreState). */
+  saveState(item, cand, info, position, transcode) {
+    try {
+      store.run(`INSERT INTO playout_state(channel_id, item_id, video_id, position, stream, transcode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(channel_id) DO UPDATE SET item_id = excluded.item_id, video_id = excluded.video_id, position = excluded.position,
+        stream = excluded.stream, transcode = excluded.transcode, updated_at = excluded.updated_at`,
+        this.channelId, item.id, item.video_id, position, JSON.stringify({ cand, info }), transcode ? 1 : 0, Date.now());
+    } catch (e) {
+      log.debug(`channel ${this.channelId}: could not save the playout state: ${e.message}`);
+    }
+  }
+
+  /**
+   * After a restart: if the channel was playing this very program a short while ago, hand its stream to the
+   * prefetch cache so playback starts without an addon lookup or a probe. True when something was restored.
+   */
+  restoreState(item, channel) {
+    const saved = store.get('SELECT * FROM playout_state WHERE channel_id = ?', this.channelId);
+    if (!saved || saved.video_id !== item.video_id || Date.now() - saved.updated_at > STATE_MAX_AGE_MS) return false;
+    let stream;
+    try { stream = JSON.parse(saved.stream); } catch { return false; }
+    if (!stream?.cand?.url || !stream.info) return false;
+    seedPrepared(item, channel, stream);
+    if (saved.transcode) longGop.set(stream.cand.url, Date.now());
+    log.info(`channel ${channel.number}: ${itemLabel(item)} was playing before the restart (at ${Math.round(saved.position)}s, ${Math.round((Date.now() - saved.updated_at) / 1000)}s ago); using the same stream`);
+    return true;
+  }
+
+  /**
+   * A generated channel (the weather forecast): one music track at a time over a picture drawn for it, the
+   * clock written live in the corner. Runs until the guide item ends.
+   */
+  async playUtility(item) {
+    const channel = store.getChannel(this.channelId);
+    const u = utilityOf(channel);
+    if (!channel || !u) { this.stop(); return 'failed'; }
+    this.setStatus({ state: 'playing', item: { ...item, label: itemLabel(item) }, stream: { label: 'Generated live', resolution: channel.resolution }, message: '' });
+    const recent = recentTracks.get(this.channelId) || [];
+    let fails = 0;
+    while (!this.stopped && !this.skipRequested) {
+      const left = (item.end - this.clock()) / 1000;
+      if (left < 3) break;
+      const track = pickTrack(u.music || 'classical', recent);
+      const seconds = Math.min(left, track ? track.duration : 300);
+      let frame;
+      try {
+        frame = await renderUtilityFrame(channel, { nowPlaying: track ? trackLabel(track) : '', dir: this.dir, name: `frame-${this.program + 1}` });
+      } catch (e) {
+        log.warn(`channel ${channel.number}: ${e.message}`);
+        this.setStatus({ state: 'error', message: redact(e.message) });
+        if (++fails > 3) return 'failed';
+        await this.playSlate(itemLabel(item), redact(e.message), Math.min(60, left));
+        continue;
+      }
+      if (track) { recent.push(track.id); recentTracks.set(this.channelId, recent.slice(-15)); }
+      this.status.stream = { label: track ? trackLabel(track) : 'Music is still downloading', resolution: channel.resolution, codec: 'h264', height: frame.height };
+      log.info(`channel ${channel.number}: ${itemLabel(item)}: ${track ? trackLabel(track) : 'no music yet'} (${Math.round(seconds)}s)`);
+      const target = this.leadTarget(null);
+      const burst = Math.max(4, Math.min(target, target - this.leadSeconds()));
+      const produced = await this.runFfmpeg(this.utilityArgs(frame, track ? trackPath(track) : null, seconds, burst), { env: { TZ: store.getSettings().timezone } });
+      fs.rm(frame.png, { force: true }, () => {});
+      if (produced.code !== 0 && produced.seconds < 5 && !this.stopped && !this.skipRequested) {
+        if (++fails > 3) { this.setStatus({ state: 'error', message: 'Could not render the channel' }); return 'failed'; }
+        await sleep(2000);
+      } else fails = 0;
+    }
+    this.skipRequested = false;
+    return 'done';
+  }
+
+  /** ffmpeg arguments for one utility track: the still picture, the music, and the live clock in the corner. */
+  utilityArgs(frame, audioFile, seconds, burst) {
+    const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-readrate', '1'];
+    if (this.capsBurst) args.push('-readrate_initial_burst', String(Math.round(burst)));
+    // Only the picture is paced: pacing the music too would hold the tune-in burst back to real time.
+    args.push('-loop', '1', '-framerate', '25', '-i', frame.png);
+    if (audioFile) args.push('-i', audioFile);
+    else args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+    const vf = [];
+    if (upNextFont && frame.clockBox) {
+      const b = frame.clockBox;
+      const font = upNextFont.replace(/\\/g, '/').replace(/:/g, '\\:');
+      const right = b.x + b.w - Math.round(b.h * 0.35);
+      // Two levels of escaping: "\:" separates the function from its format for drawtext's option parser, and
+      // the ":" inside the strftime format needs "\\\:" so that one survives into the expansion.
+      vf.push(`drawtext=fontfile='${font}':text='%{localtime\\:%-I\\\\\\:%M %p}':fontsize=${Math.round(b.h * 0.34)}:fontcolor=white:x=${right}-tw:y=${b.y + Math.round(b.h * 0.14)}`);
+      vf.push(`drawtext=fontfile='${font}':text='%{localtime\\:%A, %B %-d}':fontsize=${Math.round(b.h * 0.17)}:fontcolor=0xc9ced9:x=${right}-tw:y=${b.y + Math.round(b.h * 0.6)}`);
+    }
+    vf.push('format=yuv420p');
+    args.push('-t', seconds.toFixed(2), '-map', '0:v:0', '-map', '1:a:0', '-vf', vf.join(','),
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-crf', '20', '-r', '25', '-g', '50', '-keyint_min', '50', '-sc_threshold', '0',
+      '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000', '-sn', '-dn');
+    return args;
   }
 
   /** Commercials from the channel's bundles, as many as it asks for that fit before `next` starts. */
@@ -509,7 +622,7 @@ export class ChannelRunner {
   }
 
   /** Runs one ffmpeg program into its own HLS playlist and folds its segments into the channel playlist. */
-  runFfmpeg(inputArgs, { vtt = false, maxSegment = 0 } = {}) {
+  runFfmpeg(inputArgs, { vtt = false, maxSegment = 0, env = null } = {}) {
     const n = ++this.program;
     // The trailing "_" matters: ffmpeg names WebVTT segments "<playlist name><index>.vtt", i.e. p3_0.vtt.
     const playlist = path.join(this.dir, `p${n}_.m3u8`);
@@ -521,7 +634,7 @@ export class ChannelRunner {
       '-hls_segment_filename', path.join(this.dir, `p${n}_%05d.ts`), playlist];
     log.debug('ffmpeg', args.join(' '));
     return new Promise((resolve) => {
-      const proc = spawn(config.ffmpeg, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      const proc = spawn(config.ffmpeg, args, { stdio: ['ignore', 'ignore', 'pipe'], env: env ? { ...process.env, ...env } : process.env });
       this.proc = proc;
       let stderr = '';
       let seen = 0;
@@ -766,7 +879,13 @@ export function tuneIn(ip, channelId) {
   if (!old.activeViewers().length) {
     log.info(`channel ${prev}: ${ip} switched to channel ${id}, stopping`);
     stopRunner(prev);
+    forgetState(prev);
   }
+}
+
+/** The channel stopped because nobody is watching: a later restart needn't carry on where it was. */
+function forgetState(channelId) {
+  try { store.run('DELETE FROM playout_state WHERE channel_id = ?', Number(channelId)); } catch { /* best effort */ }
 }
 
 /** False once this viewer has tuned in to a different channel (when the cap is on). */
@@ -782,12 +901,14 @@ export function startReaper() {
   for (const d of fs.readdirSync(config.hlsDir)) {
     if (/^ch\d+-[a-z0-9]+$/.test(d)) fs.rmSync(path.join(config.hlsDir, d), { recursive: true, force: true });
   }
+  try { store.run('DELETE FROM playout_state WHERE updated_at < ?', Date.now() - STATE_MAX_AGE_MS); } catch { /* best effort */ }
   const t = setInterval(() => {
     for (const [id, r] of runners) {
       if (Date.now() - r.lastAccess > config.idleSeconds * 1000) {
         log.info(`channel ${id}: no viewers, stopping`);
         r.stop();
         runners.delete(id);
+        forgetState(id);
       }
     }
   }, 10000);

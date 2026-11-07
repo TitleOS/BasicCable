@@ -8,6 +8,7 @@ import { findStreams } from './picker.js';
 import { preparedFor } from './prefetch.js';
 import { artUrl, artFile, ensureArt } from './art.js';
 import { lineup } from './labels.js';
+import { utilityOf, UTILITY_KINDS, placeLabel } from './utilities.js';
 
 const PREFIX = 'basiccable:';
 const CATALOG_ID = 'basiccable-channels';
@@ -45,6 +46,17 @@ function nowNext(channel) {
  * Stremio fetches fresh every time. The details view still gets the current episode's background, which
  * Stremio shows behind the stream list and the loading screen.
  */
+/** What a channel is about, for Stremio: its lineup, or what a generated channel shows. */
+function channelDescription(channel) {
+  const u = utilityOf(channel);
+  if (!u) return lineup(channel.id);
+  const def = UTILITY_KINDS[u.kind];
+  const where = placeLabel(u);
+  return u.kind === 'weather'
+    ? `Current conditions and the ${u.days}-day forecast for ${where || 'your area'}, with classical music.`
+    : def?.description || def?.name || u.kind;
+}
+
 function channelMeta(channel, req, full = false) {
   const art = artUrl(baseUrl(req), channel);
   const meta = {
@@ -54,7 +66,7 @@ function channelMeta(channel, req, full = false) {
     poster: channel.logo || art,
     posterShape: channel.logo ? 'square' : 'landscape',
     background: art,
-    description: lineup(channel.id),
+    description: channelDescription(channel),
     genres: ['Basic Cable'],
     runtime: 'LIVE',
     // Without videos, Stremio needs defaultVideoId (also on catalog previews) to know which streams to load.
@@ -118,7 +130,7 @@ export function registerAddon(router) {
       url: `${base}/live/${channel.id}/index.m3u8`,
       behaviorHints: { bingeGroup: `basiccable-${channel.id}` },
     }];
-    if (cur) {
+    if (cur && cur.type !== 'utility') { // a generated channel has no file to start over
       streams.push({
         name: 'Basic Cable\nStart over',
         title: `${itemLabel(cur)} from the beginning (direct debrid link)`,
@@ -201,6 +213,7 @@ export function registerAddon(router) {
     const channel = store.getChannel(id);
     const item = channel && store.get('SELECT * FROM epg WHERE id = ? AND channel_id = ?', Number(epgId), channel.id);
     if (!item) throw new HttpError(404, 'That program is no longer in the guide');
+    if (item.type === 'utility') throw new HttpError(404, 'This channel is generated live; there is no file to start over');
     const best = preparedFor(item, channel)?.cand || (await findStreams(item, channel))[0];
     if (!best) throw new HttpError(404, 'No cached debrid stream found');
     send(res, 302, '', { location: best.url });
@@ -236,7 +249,7 @@ export function registerAddon(router) {
         if (r.description) out.push(`    <desc>${x(r.description)}</desc>`);
         if (r.season != null) out.push(`    <episode-num system="xmltv_ns">${r.season - 1}.${r.episode - 1}.</episode-num>`);
         if (r.poster) out.push(`    <icon src="${x(r.poster)}"/>`);
-        out.push(`    <category>${r.type === 'movie' ? 'Movie' : 'Series'}</category>`);
+        out.push(`    <category>${r.type === 'movie' ? 'Movie' : r.type === 'utility' ? (r.meta_id === 'utility:weather' ? 'Weather' : 'News') : 'Series'}</category>`);
         out.push('  </programme>');
       }
     }

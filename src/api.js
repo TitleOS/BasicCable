@@ -10,6 +10,8 @@ import { noRepeatDays, recentlyShown } from './history.js';
 import * as ads from './commercials.js';
 import fs from 'node:fs';
 import { runnerStatus, stopRunner, ffmpegCaps } from './playout.js';
+import { UTILITY_KINDS, listUtilities, utilityChannel, utilityConfig, warmUtility } from './utilities.js';
+import { allSets, ensureSet, scanOwn, listTracks, knownSet } from './music.js';
 
 const A = { auth: true };
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -58,6 +60,8 @@ function channelInput(b, partial = false) {
       excludeKeywords: (Array.isArray(o.excludeKeywords) ? o.excludeKeywords : String(o.excludeKeywords || '').split(','))
         .map((s) => String(s).trim()).filter(Boolean),
     };
+    // A generated channel's settings (weather place, forecast length...) travel with it, e.g. in a backup.
+    if (o.utility && typeof o.utility === 'object' && UTILITY_KINDS[o.utility.kind]) out.options.utility = o.utility;
   }
   return out;
 }
@@ -228,6 +232,7 @@ async function importBackup(data, { replace = false, includeSettings = false } =
   });
 
   if (includeSettings && data.settings) await applySettings(data.settings);
+  for (const ch of created) if (ch.options?.utility) warmUtility(ch); // a weather channel's music starts downloading
   // Guides need metadata lookups; build them in the background.
   (async () => {
     for (const ch of created) await buildChannel(ch.id).catch((e) => log.error(`guide build after import failed for ${ch.name}:`, e));
@@ -335,6 +340,7 @@ async function testAddonOp(url) {
 async function channelStreamsOp(c, item, { fresh = false } = {}) {
   let candidates = [];
   let error = null;
+  if (item.type === 'utility') return { item: { ...item, label: itemLabel(item) }, target: c.resolution, fallback: c.fallback, error: 'This channel is generated live; it plays no files.', candidates: [] };
   try {
     candidates = await findStreams(item, c, { fresh });
   } catch (e) {
@@ -349,8 +355,55 @@ async function channelStreamsOp(c, item, { fresh = false } = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Utility channels (generated: weather...)
+
+/**
+ * Turn a utility channel on, change its settings, or turn it off (which deletes its channel). `body`:
+ * { enabled, number?, name?, ...settings }. Returns the utility as listUtilities() shows it.
+ */
+async function configureUtilityOp(kind, body) {
+  const def = UTILITY_KINDS[kind];
+  if (!def) throw new HttpError(404, `No utility channel called "${kind}"`);
+  const existing = utilityChannel(kind);
+  if (body.enabled === false) {
+    if (existing) deleteChannelOp(existing);
+    return listUtilities().find((u) => u.kind === kind);
+  }
+  let cfg;
+  try {
+    cfg = await utilityConfig(kind, body, existing?.options?.utility || null);
+  } catch (e) {
+    throw new HttpError(e.status || 400, e.message);
+  }
+  const patch = { options: { utility: cfg } };
+  if (body.name !== undefined && String(body.name).trim()) patch.name = String(body.name).trim();
+  if (body.number !== undefined && body.number !== '' && body.number !== null) {
+    const n = parseInt(body.number, 10);
+    if (!(n >= 1)) throw new HttpError(400, 'Channel number must be 1 or more');
+    patch.number = n;
+  }
+  let channel;
+  if (existing) {
+    const changed = JSON.stringify(existing.options.utility) !== JSON.stringify(cfg);
+    channel = store.updateChannel(existing.id, patch);
+    if (changed) {
+      await rebuild(channel.id); // the guide names the place and the forecast length
+      stopRunner(channel.id); // the picture is drawn again with the new settings on the next tune-in
+    }
+  } else {
+    channel = store.createChannel({
+      name: patch.name || def.channelName, number: patch.number, resolution: 1080, fallback: 'lower', fill_mode: 'sequential', round_minutes: 0,
+      options: { utility: cfg, subtitles: 'off', noRepeatDays: 0, commercialsPerBreak: 0, upNextOverlay: false, audio: 'aac' },
+    });
+    await buildChannel(channel.id);
+  }
+  warmUtility(channel);
+  return listUtilities().find((u) => u.kind === kind);
+}
+
 export const ops = {
-  channelInput, slotInput, contentInput, normTypes, rebuild, applySettings, exportBackup, importBackup, channelDetail,
+  channelInput, slotInput, contentInput, normTypes, rebuild, applySettings, exportBackup, importBackup, channelDetail, configureUtility: configureUtilityOp,
   createChannel: createChannelOp, updateChannel: updateChannelOp, deleteChannel: deleteChannelOp,
   addSource: addSourceOp, updateSource: updateSourceOp, deleteSource: deleteSourceOp,
   addSlot: addSlotOp, updateSlot: updateSlotOp, deleteSlot: deleteSlotOp,
@@ -567,6 +620,22 @@ export function registerApi(router) {
   }, A);
 
   router.get('/api/status', (req, res) => send(res, 200, { runners: runnerStatus() }), A);
+
+  // --- utility channels and their music
+  router.get('/api/utilities', (req, res) => send(res, 200, { utilities: listUtilities(), music: allSets() }), A);
+  router.put('/api/utilities/:kind', async (req, res, { kind }) => {
+    send(res, 200, await configureUtilityOp(kind, await readJson(req)));
+  }, A);
+  router.get('/api/music/:set', (req, res, { set }) => {
+    if (!knownSet(set)) throw new HttpError(404, 'No such music set');
+    send(res, 200, { ...allSets().find((s) => s.set === set), tracks: listTracks(set) });
+  }, A);
+  // Look for new files in the set's own/ folder and try failed downloads again.
+  router.post('/api/music/:set/rescan', (req, res, { set }) => {
+    if (!knownSet(set)) throw new HttpError(404, 'No such music set');
+    const added = scanOwn(set);
+    send(res, 200, { ...ensureSet(set, { retryFailed: true }), added });
+  }, A);
 
   // --- backup / restore
   router.get('/api/backup', (req, res) => {

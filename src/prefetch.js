@@ -85,6 +85,13 @@ export function prepareStream(item, channel) {
   return job;
 }
 
+/** A stream known to work (saved before a restart): use it without asking the addons or probing again. */
+export function seedPrepared(item, channel, { cand, info }) {
+  const key = keyOf(item, channel);
+  if (!fresh(ready.get(key))) ready.set(key, { at: Date.now(), cand, info, restored: true });
+  return ready.get(key);
+}
+
 /** A prepared stream failed to play: forget it so the next call picks another candidate. */
 export function dropPrepared(item, channel, url) {
   const key = keyOf(item, channel);
@@ -211,7 +218,7 @@ async function tick() {
     const lead = Number(store.getSettings().prefetchMinutes ?? 10) * 60000;
     if (lead <= 0) return;
     const now = Date.now();
-    for (const channel of store.listChannels().filter((c) => c.enabled)) {
+    for (const channel of store.listChannels().filter((c) => c.enabled && !c.options?.utility)) {
       // Upcoming programs only. What's on air is the runner's business: re-checking it here once cut a movie off
       // mid-broadcast when its prepared stream expired and the re-check hit an addon hiccup.
       const items = store.all('SELECT * FROM epg WHERE channel_id = ? AND start > ? AND start <= ? ORDER BY start', channel.id, now, now + lead);

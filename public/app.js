@@ -117,6 +117,14 @@ async function viewGuide() {
   state.timers.push(setInterval(load, MIN));
 }
 
+/** The second line under a program's title: episode, "Movie", or what a generated channel shows. */
+function subLabel(it) {
+  if (!it) return '';
+  if (it.type === 'utility') return it.episode_title || 'Live';
+  if (it.season != null) return `S${String(it.season).padStart(2, '0')}E${String(it.episode).padStart(2, '0')} · ${it.episode_title || ''}`;
+  return 'Movie';
+}
+
 function nowStrip(data) {
   const strip = h('div', { class: 'now-strip' });
   for (const c of data.channels.filter((x) => x.enabled)) {
@@ -130,7 +138,7 @@ function nowStrip(data) {
       h('div', { class: 'body' },
         h('div', { class: 'ch' }, h('b', {}, c.number), c.name, c.live ? h('span', { class: 'badge live', title: c.live.stream?.label || c.live.message || '' }, c.live.state === 'playing' ? 'STREAMING' : c.live.state.toUpperCase()) : null),
         h('div', { class: 'title' }, cur ? cur.title : 'Off air'),
-        h('div', { class: 'ep' }, cur && cur.season != null ? `S${String(cur.season).padStart(2, '0')}E${String(cur.episode).padStart(2, '0')} · ${cur.episode_title || ''}` : cur ? 'Movie' : ''),
+        h('div', { class: 'ep' }, subLabel(cur)),
         h('div', { class: 'progress' }, bar), times,
         h('div', { class: 'next' }, next ? `Next ${fmtTime(next.start)} · ${next.label}` : '')));
     const tick = () => {
@@ -166,7 +174,7 @@ function epgGrid(data) {
       track.append(h('div', {
         class: cls, style: { left: `${left}px`, width: `${right - left - 3}px` }, title: `${fmtTime(it.start)}–${fmtTime(it.end)} ${it.label}`,
         onclick: () => showProgram(c, it),
-      }, h('b', {}, it.title), h('small', {}, `${fmtTime(it.start)} · ${it.season != null ? `S${it.season}E${it.episode} ${it.episode_title}` : 'Movie'}${it.truncated ? ' · cut short' : ''}`)));
+      }, h('b', {}, it.title), h('small', {}, `${fmtTime(it.start)} · ${subLabel(it)}${it.truncated ? ' · cut short' : ''}`)));
     }
     return h('div', { class: 'epg-row' },
       h('div', { class: 'epg-chan', onclick: () => { location.hash = `#/channels/${c.id}`; } },
@@ -237,6 +245,14 @@ async function viewChannels(id) {
   if (!id || id === 'new') return editor.append(channelForm(null));
   const ch = channels.find((c) => String(c.id) === id);
   if (!ch) return editor.append(h('div', { class: 'empty' }, 'Channel not found.'));
+  if (ch.options?.utility) {
+    editor.append(channelForm(ch),
+      h('div', { class: 'panel' }, h('h2', {}, 'Generated channel'),
+        h('p', { class: 'hint' }, 'This channel is drawn live by Basic Cable, so it has no pool, time slots or commercial breaks. ',
+          'Its settings (place, forecast length, units) are on the ', h('a', { href: '#/utilities' }, 'Utilities'), ' page.')),
+      dangerPanel(ch));
+    return;
+  }
   editor.append(channelForm(ch), poolPanel(ch), slotsPanel(ch), breaksPanel(ch), historyPanel(ch), dangerPanel(ch));
 }
 
@@ -666,6 +682,72 @@ function bundlePanel(b) {
     preview, list);
 }
 
+// ---------------------------------------------------------------- utilities
+
+async function viewUtilities() {
+  const { utilities } = await api('/api/utilities');
+  $view.replaceChildren(
+    h('h1', {}, 'Utilities'),
+    h('p', { class: 'sub' }, 'Channels Basic Cable generates itself: no files, no stream addons. Turn one on, pick its settings, and it appears in the guide and in Stremio like any other channel.'),
+    ...utilities.map(utilityPanel));
+  if (utilities.some((u) => u.enabled && u.music && u.music.pending)) every(5000, async () => {
+    const r = await api('/api/utilities').catch(() => null);
+    if (r && !r.utilities.some((u) => u.enabled && u.music && u.music.pending)) route();
+  });
+}
+
+function utilityPanel(u) {
+  const c = u.config || {};
+  const f = {
+    enabled: h('input', { type: 'checkbox', checked: u.enabled }),
+    number: h('input', { type: 'number', min: 1, value: u.channel?.number ?? '', placeholder: 'auto', style: { width: '110px' } }),
+    name: h('input', { type: 'text', value: u.channel?.name || u.name, placeholder: u.name }),
+    place: h('input', { type: 'text', value: c.place || '', placeholder: 'e.g. 55101, or GB SW1A, or a town' }),
+    days: h('select', {}, [3, 4, 5, 6, 7].map((d) => h('option', { value: d, selected: d === Number(c.days || 5) }, `${d} days`))),
+    units: h('select', {}, [['F', 'Fahrenheit (°F)'], ['C', 'Celsius (°C)'], ['K', 'Kelvin (K)']].map(([v, l]) => h('option', { value: v, selected: v === (c.units || 'F') }, l))),
+  };
+  const resolved = c.resolved ? h('span', { class: 'hint' }, `Found: ${[c.resolved.name, c.resolved.region, c.resolved.country].filter(Boolean).join(', ')}`) : null;
+  const save = (btn) => busy(btn, async () => {
+    if (!f.enabled.checked) {
+      if (u.enabled && !confirm(`Turn off the ${u.name} channel? It is removed from the guide and from Stremio (your settings are kept here until you save again).`)) { f.enabled.checked = true; return; }
+      if (u.enabled) await api(`/api/utilities/${u.kind}`, { method: 'PUT', body: { enabled: false } });
+      toast(`${u.name} channel is off`);
+      return route();
+    }
+    const body = { enabled: true, number: f.number.value, name: f.name.value, place: f.place.value, days: Number(f.days.value), units: f.units.value };
+    const r = await api(`/api/utilities/${u.kind}`, { method: 'PUT', body });
+    toast(u.enabled ? `${u.name} channel updated` : `${u.name} is now channel ${r.channel.number}`);
+    route();
+  });
+  const m = u.music;
+  const musicLine = m ? (m.pending ? `${m.ready} of ${m.total} tracks ready, downloading${m.downloading ? `: ${m.downloading}` : '…'}`
+    : `${m.ready} track${m.ready === 1 ? '' : 's'} ready · ${m.minutes} min${m.failed ? ` · ${m.failed} failed` : ''}${m.own ? ` · ${m.own} of your own` : ''}`) : '';
+  const rescan = (btn) => busy(btn, async () => { const r = await api(`/api/music/${m.set}/rescan`, { method: 'POST' }); toast(r.added ? `Found ${r.added} new file${r.added === 1 ? '' : 's'}` : 'Checking the folder and retrying downloads'); setTimeout(route, 1500); });
+  const field = (label, el, hint) => h('label', { class: 'field' }, label, el, hint ? h('span', { class: 'hint' }, hint) : null);
+  return h('div', { class: 'panel' },
+    h('div', { class: 'row' }, h('h2', { style: { margin: 0 } }, u.name),
+      u.enabled ? h('span', { class: 'badge ok' }, `channel ${u.channel.number}`) : h('span', { class: 'badge' }, 'off'),
+      h('span', { class: 'spacer' }),
+      u.enabled ? h('a', { class: 'btn small ghost', href: `#/channels/${u.channel.id}` }, 'Channel page') : null,
+      u.enabled ? h('a', { class: 'btn small ghost', href: stremioLink(u.channel.id) }, 'Open in Stremio') : null),
+    h('p', { class: 'hint', style: { marginBottom: '12px' } }, u.description),
+    h('div', { class: 'grid-form' },
+      field('Zip or postal code', f.place, 'US zip codes as is; other countries with the country code first ("GB SW1A", "DE 10115"). A town name works too.'),
+      field('Forecast length', f.days),
+      field('Temperatures', f.units),
+      field('Channel number', f.number, 'Leave empty to take the next free number'),
+      field('Channel name', f.name)),
+    resolved,
+    m ? h('div', { class: 'field', style: { marginTop: '12px' } }, `Music: ${m.name}`,
+      h('span', { class: 'hint' }, `${m.description} ${musicLine}`),
+      h('span', { class: 'hint' }, `Add your own files to ${m.folder} on the server and press Rescan; they join the rotation. Downloads start when the channel is turned on.`)) : null,
+    h('div', { class: 'row', style: { marginTop: '14px' } },
+      h('label', { class: 'check' }, f.enabled, 'Enabled'),
+      h('span', { class: 'spacer' }),
+      m ? h('button', { class: 'btn ghost', onclick: (e) => rescan(e.currentTarget) }, 'Rescan music') : null,
+      h('button', { class: 'btn primary', onclick: (e) => save(e.currentTarget) }, 'Save')));
+}
+
 // ---------------------------------------------------------------- settings
 
 async function viewSettings() {
@@ -820,6 +902,7 @@ async function route() {
   try {
     if (v === 'channels') await viewChannels(arg);
     else if (v === 'commercials') await viewCommercials();
+    else if (v === 'utilities') await viewUtilities();
     else if (v === 'settings') await viewSettings();
     else if (v === 'connect') await viewConnect();
     else await viewGuide();

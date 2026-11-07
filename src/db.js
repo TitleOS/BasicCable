@@ -112,6 +112,30 @@ CREATE TABLE IF NOT EXISTS history (
 );
 CREATE INDEX IF NOT EXISTS history_channel_aired ON history(channel_id, aired_at);
 CREATE TABLE IF NOT EXISTS meta_cache (key TEXT PRIMARY KEY, json TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+-- Music for the generated channels (weather, news...): bundled downloads and the user's own files, per set.
+CREATE TABLE IF NOT EXISTS music_tracks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  set_name TEXT NOT NULL,
+  source TEXT NOT NULL,            -- 'bundled' (downloaded from the manifest) or 'own' (a file in the set's own/ folder)
+  file TEXT NOT NULL,              -- path relative to the set's folder
+  composer TEXT NOT NULL DEFAULT '',
+  work TEXT NOT NULL DEFAULT '',
+  performer TEXT NOT NULL DEFAULT '',
+  duration REAL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT NOT NULL DEFAULT '',
+  UNIQUE (set_name, file)
+);
+-- Where each running channel is, so a restart carries on with the same stream instead of picking again.
+CREATE TABLE IF NOT EXISTS playout_state (
+  channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+  item_id INTEGER NOT NULL,
+  video_id TEXT NOT NULL,
+  position REAL NOT NULL,
+  stream TEXT NOT NULL,            -- JSON: the candidate and probe result the runner was playing
+  transcode INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 const JSON_COLS = new Set(['options', 'content', 'cursor_prev']);

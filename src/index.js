@@ -14,6 +14,7 @@ import { prerenderArt } from './art.js';
 import { startHistory } from './history.js';
 import { startCommercials } from './commercials.js';
 import { store } from './db.js';
+import { startMusic } from './music.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -110,6 +111,7 @@ server.listen(config.port, config.host, async () => {
   startReaper();
   startHistory();
   startCommercials();
+  startMusic(store.listChannels().map((c) => c.options?.utility?.music).filter(Boolean));
   startScheduler();
   startPrefetcher();
   // Clean up any guide items an older build stretched too far.

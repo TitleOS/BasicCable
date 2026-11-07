@@ -21,6 +21,8 @@ Each channel has a guide that runs on the real clock. Open a channel in Stremio 
 - **No-repeat window**: a channel won't air the same episode or movie again within 3 days, or whatever window you set. Each channel keeps 90 days of history, shown in the channel editor. If every choice is a repeat (a small pool), the one shown longest ago plays. Episodes that were cut short don't count.
 - **Commercial breaks**: upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps") and play 1–3 of them between programs. See [Commercials](#commercials).
 - **"Up next" box**: optionally, during a program's last minute, a box in the corner shows the next two programs. See [Up next box](#up-next-box).
+- **Weather channel**: a generated channel with the current conditions and a 3- to 7-day forecast for your zip code, over classical music. See [Utility channels](#utility-channels).
+- **Carries on after a restart**: a channel that was playing when the container restarted resumes with the same stream, without asking the addons again. See [Restarts](#restarts).
 - **Streams picked in advance**: about 10 minutes before a program starts, its file is chosen and checked. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore**: export channels, pools, wildcards, slots and each show's progress to one JSON file and import it elsewhere. See [Backup and restore](#backup-and-restore).
 - **One stream per device**: each viewer IP watches one channel at a time, and the channel you switch away from stops. See [Stream cap](#stream-cap).
@@ -201,6 +203,28 @@ The box is drawn into the video, and every player shows it. The trade-offs:
 - 60 seconds before the end, the copied stream stops and the re-encoded one takes over, the same way playback resumes after a dropped link. Most players carry on without a pause; some stutter briefly.
 - HDR programs get no box, since re-encoding them would flatten their colours.
 - The box shows the guide as it is when the last minute starts. Programs that are already being re-encoded (burned-in subtitles, sparse keyframes) get the box without the extra hand-over.
+
+## Utility channels
+
+The **Utilities** page has channels Basic Cable generates itself. They use no files and no stream addons; turn one on and it appears in the guide, in Stremio and in the M3U playlist like any other channel, with the channel number you pick (or the next free one).
+
+### Weather
+
+Enter a zip code (US as is; other countries with the country code first, like `GB SW1A` or `DE 10115`; a town name works too), choose 3 to 7 forecast days and the temperature unit (°F, °C or K), and save. The channel shows:
+
+- the current conditions, temperature, humidity and wind for the place;
+- one column per day with the conditions, the high under a sun with that day's sunrise time, the low under the moon as it will look that night (its phase is drawn and named), and the day's humidity with a face: happy when it's comfortable (20–60%), neutral when it's a bit muggy or very dry, unhappy above 75%;
+- the piece playing, and the date and time, along the bottom.
+
+The forecast comes from [Open-Meteo](https://open-meteo.com) (zip codes are looked up at [zippopotam.us](https://zippopotam.us)); neither needs an account. It is refreshed every 15 minutes. The picture is drawn with ffmpeg; while someone is watching, the channel takes about half a CPU core at 1080p.
+
+The music is a set of recordings by Mozart, Haydn, Beethoven, Schubert, Clementi and Boccherini whose performers released them as CC0, or that are US government recordings (the Marine Band's "Gran Partita"), listed in `src/musicsets.js` with a link to each file on Wikimedia Commons. They are downloaded once, into `music/classical/` in the data volume (about 430 MB to download, 300 MB kept as AAC), starting when the channel is first turned on; the channel plays silently until the first track is in. To add your own music, copy audio files into `music/classical/own/` and press **Rescan music**; they join the rotation as they are. `MUSIC_DOWNLOADS_OFF=1` stops the downloads if you only want your own files.
+
+More utility channels are planned (news headlines with a scrolling bar, for one).
+
+## Restarts
+
+Each running channel saves where it is every 15 seconds: the program, the position and the stream it picked. When the container restarts while people are watching, the channel resumes with that same stream at the live position, without asking the addons or checking the file again, so the picture is back in a few seconds. A channel nobody was watching doesn't resume. Saved positions older than six hours are ignored, since debrid links expire.
 
 ## Backup and restore
 
