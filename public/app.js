@@ -249,7 +249,7 @@ async function viewChannels(id) {
     editor.append(channelForm(ch),
       h('div', { class: 'panel' }, h('h2', {}, 'Generated channel'),
         h('p', { class: 'hint' }, 'This channel is drawn live by Basic Cable, so it has no pool, time slots or commercial breaks. ',
-          'Its settings (place, forecast length, units) are on the ', h('a', { href: '#/utilities' }, 'Utilities'), ' page.')),
+          `Its settings (${ch.options.utility.kind === 'news' ? 'sources and feeds' : 'place, forecast length, units'}) are on the `, h('a', { href: '#/utilities' }, 'Utilities'), ' page.')),
       dangerPanel(ch));
     return;
   }
@@ -698,6 +698,8 @@ async function viewUtilities() {
 
 function utilityPanel(u) {
   const c = u.config || {};
+  const field = (label, el, hint) => h('label', { class: 'field' }, label, el, hint ? h('span', { class: 'hint' }, hint) : null);
+  const news = u.kind === 'news';
   const f = {
     enabled: h('input', { type: 'checkbox', checked: u.enabled }),
     number: h('input', { type: 'number', min: 1, value: u.channel?.number ?? '', placeholder: 'auto', style: { width: '110px' } }),
@@ -705,6 +707,8 @@ function utilityPanel(u) {
     place: h('input', { type: 'text', value: c.place || '', placeholder: 'e.g. 55101, or GB SW1A, or a town' }),
     days: h('select', {}, [3, 4, 5, 6, 7].map((d) => h('option', { value: d, selected: d === Number(c.days || 5) }, `${d} days`))),
     units: h('select', {}, [['F', 'Fahrenheit (°F)'], ['C', 'Celsius (°C)'], ['K', 'Kelvin (K)']].map(([v, l]) => h('option', { value: v, selected: v === (c.units || 'F') }, l))),
+    sources: Object.fromEntries(Object.entries(u.defaultSources || {}).map(([k]) => [k, h('input', { type: 'checkbox', checked: c.sources?.[k] !== false })])),
+    feeds: h('textarea', { rows: 3, placeholder: 'One RSS or Atom feed URL per line, e.g. https://feeds.bbci.co.uk/news/world/rss.xml', style: { width: '100%' } }, (c.feeds || []).map((x) => x.url).join('\n')),
   };
   const resolved = c.resolved ? h('span', { class: 'hint' }, `Found: ${[c.resolved.name, c.resolved.region, c.resolved.country].filter(Boolean).join(', ')}`) : null;
   const save = (btn) => busy(btn, async () => {
@@ -714,16 +718,41 @@ function utilityPanel(u) {
       toast(`${u.name} channel is off`);
       return route();
     }
-    const body = { enabled: true, number: f.number.value, name: f.name.value, place: f.place.value, days: Number(f.days.value), units: f.units.value };
+    const body = { enabled: true, number: f.number.value, name: f.name.value };
+    if (news) {
+      body.sources = Object.fromEntries(Object.entries(f.sources).map(([k, el]) => [k, el.checked]));
+      body.feeds = f.feeds.value.split('\n').map((s) => s.trim()).filter(Boolean);
+    } else Object.assign(body, { place: f.place.value, days: Number(f.days.value), units: f.units.value });
     const r = await api(`/api/utilities/${u.kind}`, { method: 'PUT', body });
+    if (r.rejected?.length) {
+      // Feeds that are not RSS or Atom are dropped on save and said so, as asked.
+      alert(`Saved, but ${r.rejected.length === 1 ? 'this feed was' : 'these feeds were'} removed:\n\n${r.rejected.map((x) => `${x.url}\n   ${x.reason}`).join('\n\n')}`);
+    }
     toast(u.enabled ? `${u.name} channel updated` : `${u.name} is now channel ${r.channel.number}`);
     route();
   });
+  const sourceStatus = (key) => {
+    const s = (u.sources || []).find((x) => x.key === key);
+    return !s || !s.checked ? '' : s.error ? ` · not answering: ${s.error}` : ` · ${s.count} headline${s.count === 1 ? '' : 's'}`;
+  };
+  const settings = news
+    ? [h('div', { class: 'field' }, 'Sources',
+        ...Object.entries(u.defaultSources || {}).map(([k, d]) => h('label', { class: 'check' }, f.sources[k], `${d.name}${sourceStatus(k)}`)),
+        h('span', { class: 'hint' }, 'AP no longer publishes a feed of its own, so its headlines come through Google News, limited to apnews.com.')),
+      h('label', { class: 'field' }, 'Your own feeds', f.feeds,
+        h('span', { class: 'hint' }, 'Each URL is fetched when you save; one that is not an RSS or Atom feed is removed and you are told.'),
+        ...(c.feeds || []).map((x) => h('span', { class: 'hint' }, `${x.title || x.url}${sourceStatus(x.url)}`))),
+      field('Channel number', f.number, 'Leave empty to take the next free number'),
+      field('Channel name', f.name)]
+    : [field('Zip or postal code', f.place, 'US zip codes as is; other countries with the country code first ("GB SW1A", "DE 10115"). A town name works too.'),
+      field('Forecast length', f.days),
+      field('Temperatures', f.units),
+      field('Channel number', f.number, 'Leave empty to take the next free number'),
+      field('Channel name', f.name)];
   const m = u.music;
   const musicLine = m ? (m.pending ? `${m.ready} of ${m.total} tracks ready, downloading${m.downloading ? `: ${m.downloading}` : '…'}`
     : `${m.ready} track${m.ready === 1 ? '' : 's'} ready · ${m.minutes} min${m.failed ? ` · ${m.failed} failed` : ''}${m.own ? ` · ${m.own} of your own` : ''}`) : '';
   const rescan = (btn) => busy(btn, async () => { const r = await api(`/api/music/${m.set}/rescan`, { method: 'POST' }); toast(r.added ? `Found ${r.added} new file${r.added === 1 ? '' : 's'}` : 'Checking the folder and retrying downloads'); setTimeout(route, 1500); });
-  const field = (label, el, hint) => h('label', { class: 'field' }, label, el, hint ? h('span', { class: 'hint' }, hint) : null);
   return h('div', { class: 'panel' },
     h('div', { class: 'row' }, h('h2', { style: { margin: 0 } }, u.name),
       u.enabled ? h('span', { class: 'badge ok' }, `channel ${u.channel.number}`) : h('span', { class: 'badge' }, 'off'),
@@ -731,13 +760,9 @@ function utilityPanel(u) {
       u.enabled ? h('a', { class: 'btn small ghost', href: `#/channels/${u.channel.id}` }, 'Channel page') : null,
       u.enabled ? h('a', { class: 'btn small ghost', href: stremioLink(u.channel.id) }, 'Open in Stremio') : null),
     h('p', { class: 'hint', style: { marginBottom: '12px' } }, u.description),
-    h('div', { class: 'grid-form' },
-      field('Zip or postal code', f.place, 'US zip codes as is; other countries with the country code first ("GB SW1A", "DE 10115"). A town name works too.'),
-      field('Forecast length', f.days),
-      field('Temperatures', f.units),
-      field('Channel number', f.number, 'Leave empty to take the next free number'),
-      field('Channel name', f.name)),
+    h('div', { class: 'grid-form' }, ...settings),
     resolved,
+    news ? h('p', { class: 'hint', style: { marginTop: '10px' } }, 'The background is Bing\'s picture of the day (the last eight, one per song, each with its credit). The music plays about 9 dB below the weather channel.') : null,
     m ? h('div', { class: 'field', style: { marginTop: '12px' } }, `Music: ${m.name}`,
       h('span', { class: 'hint' }, `${m.description} ${musicLine}`),
       h('span', { class: 'hint' }, `Add your own files to ${m.folder} on the server and press Rescan; they join the rotation. Downloads start when the channel is turned on.`)) : null,

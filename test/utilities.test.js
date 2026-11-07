@@ -10,7 +10,7 @@ const { store } = await import('../src/db.js');
 const { buildChannel } = await import('../src/scheduler.js');
 const { utilityRows, utilityConfig, listUtilities, placeLabel, frameSize } = await import('../src/utilities.js');
 const { ensureSet, setStatus, pickTrack, trackLabel, scanOwn, ownDir, pauseDownloads } = await import('../src/music.js');
-const { MUSIC_SETS } = await import('../src/musicsets.js');
+const { MUSIC_SETS, trackId } = await import('../src/musicsets.js');
 pauseDownloads(true); // never fetch the real recordings in a test
 
 const ZONE = 'America/Chicago';
@@ -55,7 +55,7 @@ test('utility settings are checked', async () => {
   await assert.rejects(utilityConfig('weather', { days: 9, place: '55101' }), /3 to 7 days/);
   await assert.rejects(utilityConfig('weather', { units: 'R', place: '55101' }), /F, C or K/);
   await assert.rejects(utilityConfig('weather', { days: 5 }), /zip or postal code/);
-  await assert.rejects(utilityConfig('news', {}), /No utility channel/);
+  await assert.rejects(utilityConfig('traffic', {}), /No utility channel/);
   // A place that was resolved before is kept without another lookup.
   const prev = { kind: 'weather', place: '55101', days: 5, units: 'F', music: 'classical', resolved };
   const cfg = await utilityConfig('weather', { place: '55101', days: 3, units: 'c' }, prev);
@@ -66,11 +66,17 @@ test('utility settings are checked', async () => {
 
 test('the bundled music set registers its tracks; own files are picked up and labelled', () => {
   assert.ok(MUSIC_SETS.classical.tracks.length >= 40);
-  for (const t of MUSIC_SETS.classical.tracks) {
-    assert.match(t.url, /^https:\/\/upload\.wikimedia\.org\//);
-    assert.ok(['CC0', 'Public domain'].includes(t.licence), t.licence);
-    assert.ok(t.composer && t.work && t.seconds > 60);
+  assert.ok(MUSIC_SETS.jazz.tracks.length >= 40);
+  for (const [set, def] of Object.entries(MUSIC_SETS)) {
+    for (const t of def.tracks) {
+      assert.match(t.url, /^https:\/\/upload\.wikimedia\.org\/[^?]*$/, `${set}: ${t.url}`);
+      assert.ok(['CC0', 'Public domain'].includes(t.licence), t.licence);
+      assert.ok(t.work && t.seconds > 60);
+    }
+    // Every track gets its own file name (the download is keyed on it).
+    assert.equal(new Set(def.tracks.map((t) => trackId(t.url))).size, def.tracks.length, `${set}: file names collide`);
   }
+  for (const t of MUSIC_SETS.classical.tracks) assert.ok(t.composer);
   const before = setStatus('classical');
   assert.equal(before.total, 0);
   const st = ensureSet('classical');

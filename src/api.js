@@ -371,8 +371,9 @@ async function configureUtilityOp(kind, body) {
     return listUtilities().find((u) => u.kind === kind);
   }
   let cfg;
+  const notes = {};
   try {
-    cfg = await utilityConfig(kind, body, existing?.options?.utility || null);
+    cfg = await utilityConfig(kind, body, existing?.options?.utility || null, notes);
   } catch (e) {
     throw new HttpError(e.status || 400, e.message);
   }
@@ -399,7 +400,8 @@ async function configureUtilityOp(kind, body) {
     await buildChannel(channel.id);
   }
   warmUtility(channel);
-  return listUtilities().find((u) => u.kind === kind);
+  // Feeds that were not RSS or Atom are saved out and reported, as the user asked.
+  return { ...listUtilities().find((u) => u.kind === kind), rejected: notes.rejected || [] };
 }
 
 export const ops = {

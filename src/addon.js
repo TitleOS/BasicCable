@@ -8,7 +8,7 @@ import { findStreams } from './picker.js';
 import { preparedFor } from './prefetch.js';
 import { artUrl, artFile, ensureArt } from './art.js';
 import { lineup } from './labels.js';
-import { utilityOf, UTILITY_KINDS, placeLabel } from './utilities.js';
+import { utilityOf, utilityText } from './utilities.js';
 
 const PREFIX = 'basiccable:';
 const CATALOG_ID = 'basiccable-channels';
@@ -49,12 +49,7 @@ function nowNext(channel) {
 /** What a channel is about, for Stremio: its lineup, or what a generated channel shows. */
 function channelDescription(channel) {
   const u = utilityOf(channel);
-  if (!u) return lineup(channel.id);
-  const def = UTILITY_KINDS[u.kind];
-  const where = placeLabel(u);
-  return u.kind === 'weather'
-    ? `Current conditions and the ${u.days}-day forecast for ${where || 'your area'}, with classical music.`
-    : def?.description || def?.name || u.kind;
+  return u ? utilityText(u).description : lineup(channel.id);
 }
 
 function channelMeta(channel, req, full = false) {

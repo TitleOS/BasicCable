@@ -21,7 +21,7 @@ Each channel has a guide that runs on the real clock. Open a channel in Stremio 
 - **No-repeat window**: a channel won't air the same episode or movie again within 3 days, or whatever window you set. Each channel keeps 90 days of history, shown in the channel editor. If every choice is a repeat (a small pool), the one shown longest ago plays. Episodes that were cut short don't count.
 - **Commercial breaks**: upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps") and play 1–3 of them between programs. See [Commercials](#commercials).
 - **"Up next" box**: optionally, during a program's last minute, a box in the corner shows the next two programs. See [Up next box](#up-next-box).
-- **Weather channel**: a generated channel with the current conditions and a 3- to 7-day forecast for your zip code, over classical music. See [Utility channels](#utility-channels).
+- **Weather and news channels**: generated channels with the forecast for your zip code over classical music, and the latest headlines from AP, NPR, PBS and your own RSS feeds scrolling over Bing's picture of the day, with jazz. See [Utility channels](#utility-channels).
 - **Carries on after a restart**: a channel that was playing when the container restarted resumes with the same stream, without asking the addons again. See [Restarts](#restarts).
 - **Streams picked in advance**: about 10 minutes before a program starts, its file is chosen and checked. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore**: export channels, pools, wildcards, slots and each show's progress to one JSON file and import it elsewhere. See [Backup and restore](#backup-and-restore).
@@ -220,7 +220,15 @@ The forecast comes from [Open-Meteo](https://open-meteo.com) (zip codes are look
 
 The music is a set of recordings by Mozart, Haydn, Beethoven, Schubert, Clementi and Boccherini whose performers released them as CC0, or that are US government recordings (the Marine Band's "Gran Partita"), listed in `src/musicsets.js` with a link to each file on Wikimedia Commons. They are downloaded once, into `music/classical/` in the data volume (about 430 MB to download, 300 MB kept as AAC), starting when the channel is first turned on; the channel plays silently until the first track is in. To add your own music, copy audio files into `music/classical/own/` and press **Rescan music**; they join the rotation as they are. `MUSIC_DOWNLOADS_OFF=1` stops the downloads if you only want your own files.
 
-More utility channels are planned (news headlines with a scrolling bar, for one).
+### News
+
+Tick the sources to read (Associated Press, NPR, PBS News Hour) and add any RSS or Atom feeds of your own, one URL per line, then save. Each new URL is fetched and checked when you save; one that is not an RSS or Atom feed with items is dropped and you are told why. AP no longer publishes a feed of its own, so its headlines come through Google News limited to apnews.com. The channel shows:
+
+- a bar of headlines scrolling slowly from right to left, each with its source, the newest first and the sources taking turns; the headlines are refreshed every 10 minutes and the bar is redrawn with each song;
+- Bing's picture of the day behind it, with its credit in the corner: the last eight pictures are kept in `news/bing/` in the data volume and the channel cycles through them, one per song. When Bing can't be reached the channel falls back to a plain background;
+- the song playing, and the date and time, along the bottom.
+
+The music is a set of jazz recordings by the US Air Force's jazz ensembles (the Airmen of Note, Shades of Blue, Dimensions in Blue, the Dixie Players): US government recordings, so public domain. It plays quietly, about 9 dB under the weather channel. The set is listed in `src/musicsets.js` and downloaded once into `music/jazz/` (about 420 MB to download, 240 MB kept); your own files go in `music/jazz/own/`. A moving bar costs more than a still picture: while someone is watching, the channel takes about 60% of a CPU core at 1080p.
 
 ## Restarts
 

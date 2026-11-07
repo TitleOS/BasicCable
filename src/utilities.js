@@ -11,6 +11,8 @@ import { config, log } from './config.js';
 import { geocode, fetchForecast, UNITS, MIN_DAYS, MAX_DAYS } from './weather.js';
 import { weatherCard } from './weathercard.js';
 import { ensureSet, setStatus, knownSet } from './music.js';
+import { DEFAULT_SOURCES, MAX_FEEDS, checkFeed, feedUrl, activeSources, fetchHeadlines, sourceStatus, bingImages, keptBingImages } from './news.js';
+import { newsCard, newsLayout, tickerStrip } from './newscard.js';
 
 const HOUR = 3600e3;
 const FORECAST_TTL = 15 * 60 * 1000;
@@ -22,6 +24,13 @@ export const UTILITY_KINDS = {
     description: 'Current conditions and the forecast for your area, with classical music. Highs with the sunrise time, lows with tonight\'s moon, and how the humidity will feel.',
     defaults: { place: '', days: 5, units: 'F', music: 'classical' },
   },
+  news: {
+    name: 'News',
+    channelName: 'News',
+    description: 'Headlines from AP, NPR and PBS, and any RSS feeds you add, scrolling over Bing\'s picture of the day, with jazz played quietly.',
+    defaults: { sources: { ap: true, npr: true, pbs: true }, feeds: [], music: 'jazz' },
+    musicGainDb: -9, // the user asked for the music low
+  },
 };
 
 export const utilityOf = (channel) => channel?.options?.utility || null;
@@ -32,11 +41,47 @@ export function utilityChannel(kind) {
   return store.listChannels().find((c) => c.options?.utility?.kind === kind) || null;
 }
 
-/** Validate a utility's settings; resolves the place (a network lookup) when it changed. */
-export async function utilityConfig(kind, body, previous = null) {
+/**
+ * Validate a utility's settings; resolves the place (a network lookup) when it changed. For the news
+ * channel, feeds that are new are fetched and checked: ones that aren't RSS or Atom are left out and listed
+ * in `notes.rejected` ([{ url, reason }]) so the UI can say so, as the user asked.
+ */
+export async function utilityConfig(kind, body, previous = null, notes = {}) {
   const def = UTILITY_KINDS[kind];
   if (!def) throw Object.assign(new Error(`No utility channel called "${kind}"`), { status: 404 });
   const cfg = { ...def.defaults, ...(previous || {}), kind };
+  if (kind === 'news') {
+    if (body.music !== undefined) {
+      if (!knownSet(String(body.music))) throw Object.assign(new Error('Unknown music set'), { status: 400 });
+      cfg.music = String(body.music);
+    }
+    if (body.sources !== undefined) {
+      if (!body.sources || typeof body.sources !== 'object') throw Object.assign(new Error('sources must be an object of source: true/false'), { status: 400 });
+      cfg.sources = {};
+      for (const key of Object.keys(DEFAULT_SOURCES)) cfg.sources[key] = body.sources[key] !== false && body.sources[key] !== 'false' && body.sources[key] !== 0;
+    }
+    if (body.feeds !== undefined) {
+      const list = Array.isArray(body.feeds) ? body.feeds : String(body.feeds).split(/[\n,]+/);
+      const known = new Map((previous?.feeds || []).map((f) => [f.url, f]));
+      const feeds = [];
+      const rejected = [];
+      for (const raw of list.map((s) => (typeof s === 'string' ? s : s?.url)).map((s) => String(s || '').trim()).filter(Boolean)) {
+        if (feeds.length >= MAX_FEEDS) { rejected.push({ url: raw, reason: `at most ${MAX_FEEDS} feeds` }); continue; }
+        let url;
+        try { url = feedUrl(raw); } catch (e) { rejected.push({ url: raw, reason: e.message }); continue; }
+        if (feeds.some((f) => f.url === url)) continue;
+        if (known.has(url)) { feeds.push(known.get(url)); continue; } // accepted before: no second check
+        try {
+          feeds.push(await checkFeed(url, { fetchImpl: notes.fetchImpl }));
+        } catch (e) {
+          rejected.push({ url: raw, reason: e.message });
+        }
+      }
+      cfg.feeds = feeds;
+      notes.rejected = rejected;
+    }
+    if (!activeSources(cfg).length) throw Object.assign(new Error('Turn on at least one source or add a feed'), { status: 400 });
+  }
   if (kind === 'weather') {
     if (body.days !== undefined) {
       const d = parseInt(body.days, 10);
@@ -79,8 +124,17 @@ export function listUtilities() {
       channel: channel ? { id: channel.id, number: channel.number, name: channel.name, enabled: !!channel.enabled, resolution: channel.resolution } : null,
       config: { ...cfg, resolved: cfg.resolved || null },
       music: cfg.music ? setStatus(cfg.music) : null,
+      sources: kind === 'news' ? sourceStatus(cfg) : undefined,
+      defaultSources: kind === 'news' ? Object.fromEntries(Object.entries(DEFAULT_SOURCES).map(([k, d]) => [k, { name: d.name, url: d.url }])) : undefined,
     };
   });
+}
+
+/** "AP, NPR and PBS" or "NPR, PBS and 2 feeds of your own": the sources a news config reads, for descriptions. */
+export function sourcesLabel(cfg) {
+  const names = activeSources(cfg).map((s) => s.tag);
+  if (!names.length) return 'no sources';
+  return names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,20 +152,32 @@ export function utilityRows(channel, from, to, zone) {
   if (!u) return [];
   const rows = [];
   let t = from;
-  const where = placeLabel(u);
+  const { title, subtitle, description } = utilityText(u);
   while (t < to) {
     const end = Math.min(to, DateTime.fromMillis(t, { zone }).plus({ hours: 1 }).startOf('hour').toMillis());
     if (end <= t) break;
     rows.push({
       start: t, end, type: 'utility', meta_id: `utility:${u.kind}`, video_id: `utility:${u.kind}:${t}`,
-      title: u.kind === 'weather' ? 'Local Forecast' : UTILITY_KINDS[u.kind]?.name || u.kind,
-      episode_title: where, season: null, episode: null, poster: '', background: '',
-      description: u.kind === 'weather' ? `Current conditions and the ${u.days}-day forecast for ${where || 'your area'}, with classical music.` : '',
-      origin: 'utility', truncated: 0, cursor_prev: {},
+      title, episode_title: subtitle, season: null, episode: null, poster: '', background: '',
+      description, origin: 'utility', truncated: 0, cursor_prev: {},
     });
     t = end;
   }
   return rows;
+}
+
+/** How a utility's programs read in the guide and in Stremio: { title, subtitle, description }. */
+export function utilityText(u) {
+  if (u?.kind === 'weather') {
+    const where = placeLabel(u);
+    return { title: 'Local Forecast', subtitle: where, description: `Current conditions and the ${u.days}-day forecast for ${where || 'your area'}, with classical music.` };
+  }
+  if (u?.kind === 'news') {
+    const srcs = sourcesLabel(u);
+    return { title: 'Headlines', subtitle: activeSources(u).map((s) => s.tag).join(' · '), description: `The latest headlines from ${srcs}, over Bing's picture of the day, with jazz.` };
+  }
+  const def = UTILITY_KINDS[u?.kind];
+  return { title: def?.name || u?.kind || 'Utility', subtitle: '', description: def?.description || '' };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,36 +211,87 @@ export function frameSize(channel) {
   return { width: Math.round((h * 16) / 9 / 2) * 2, height: h };
 }
 
+const ffmpeg = (args, what) => new Promise((resolve, reject) => execFile(config.ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', ...args],
+  { timeout: 60000 }, (err, _o, stderr) => (err ? reject(new Error(`Could not draw ${what}: ${(stderr || err.message).trim().split('\n').pop()}`)) : resolve())));
+
 /**
  * Draw the channel's current picture into `dir` (via an SVG, rendered by ffmpeg's librsvg). The picture is
  * written as an uncompressed BMP: the playout loops it 25 times a second, and a BMP costs nothing to decode
  * where a PNG would take a good part of a core. Resolves to { png, clockBox, width, height } (`png` is the
- * picture's path, whatever its format).
+ * picture's path, whatever its format), plus `ticker` for a channel with a scrolling strip (see the news
+ * branch) and `audioGainDb` when the music is to play quieter.
  */
 export async function renderUtilityFrame(channel, { nowPlaying = '', dir, name = 'frame' }) {
   const u = utilityOf(channel);
   const { width, height } = frameSize(channel);
-  let svg, clockBox;
-  if (u.kind === 'weather') {
-    const forecast = await utilityForecast(channel);
-    ({ svg, clockBox } = weatherCard(forecast, { unit: u.units, width, height, nowPlaying }));
-  } else {
-    throw new Error(`Unknown utility ${u.kind}`);
-  }
   fs.mkdirSync(dir, { recursive: true });
   const svgFile = path.join(dir, `${name}.svg`);
   const png = path.join(dir, `${name}.bmp`);
-  fs.writeFileSync(svgFile, svg);
-  await new Promise((resolve, reject) => execFile(config.ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', svgFile, '-frames:v', '1', '-pix_fmt', 'bgr24', '-update', '1', png],
-    { timeout: 30000 }, (err, _o, stderr) => (err ? reject(new Error(`Could not draw the forecast: ${(stderr || err.message).trim().split('\n').pop()}`)) : resolve())));
-  fs.rmSync(svgFile, { force: true });
-  return { png, clockBox, width, height };
+  if (u.kind === 'weather') {
+    const forecast = await utilityForecast(channel);
+    const { svg, clockBox } = weatherCard(forecast, { unit: u.units, width, height, nowPlaying });
+    fs.writeFileSync(svgFile, svg);
+    await ffmpeg(['-i', svgFile, '-frames:v', '1', '-pix_fmt', 'bgr24', '-update', '1', png], 'the forecast');
+    fs.rmSync(svgFile, { force: true });
+    return { png, clockBox, width, height };
+  }
+  if (u.kind === 'news') {
+    // Headlines and the picture are fetched together; neither failing stops the channel.
+    const [headlines, picture] = await Promise.all([
+      fetchHeadlines(u).catch((e) => { log.warn(`channel ${channel.number}: headlines: ${e.message}`); return []; }),
+      nextBingPicture(channel.id),
+    ]);
+    const L = newsLayout(width, height);
+    const tags = [...new Set(activeSources(u).map((s) => s.tag))];
+    const card = newsCard({ width, height, credit: picture?.credit || '', nowPlaying, sources: tags, opaque: !picture });
+    fs.writeFileSync(svgFile, card);
+    if (picture) {
+      await ffmpeg(['-i', picture.file, '-i', svgFile, '-filter_complex', `[0]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}[bg];[bg][1]overlay=0:0,format=bgr24`, '-frames:v', '1', '-update', '1', png], 'the news picture');
+    } else {
+      await ffmpeg(['-i', svgFile, '-frames:v', '1', '-pix_fmt', 'bgr24', '-update', '1', png], 'the news picture');
+    }
+    // The strip: one long row of headlines, kept with alpha so it blends onto the bar.
+    let strip = tickerStrip(headlines, { height: L.ticker.h, windowWidth: L.ticker.w, scale: L.S });
+    const stripSvg = path.join(dir, `${name}-strip.svg`);
+    const stripFile = path.join(dir, `${name}-strip.bmp`);
+    fs.writeFileSync(stripSvg, strip.svg);
+    try {
+      await ffmpeg(['-i', stripSvg, '-frames:v', '1', '-pix_fmt', 'bgra', '-update', '1', stripFile], 'the headlines');
+    } catch (e) {
+      // A headline the renderer chokes on must not take the channel down: run the bar empty this track.
+      log.warn(`channel ${channel.number}: ${e.message}`);
+      strip = tickerStrip([], { height: L.ticker.h, windowWidth: L.ticker.w, scale: L.S });
+      fs.writeFileSync(stripSvg, strip.svg);
+      await ffmpeg(['-i', stripSvg, '-frames:v', '1', '-pix_fmt', 'bgra', '-update', '1', stripFile], 'the headlines');
+    }
+    fs.rmSync(svgFile, { force: true });
+    fs.rmSync(stripSvg, { force: true });
+    return {
+      png, clockBox: L.clockBox, width, height, audioGainDb: UTILITY_KINDS.news.musicGainDb,
+      ticker: { file: stripFile, width: strip.width, contentWidth: strip.contentWidth, x: L.ticker.x, y: L.ticker.y, w: L.ticker.w, h: L.ticker.h, speed: L.speed },
+      headlines: headlines.length,
+    };
+  }
+  throw new Error(`Unknown utility ${u.kind}`);
 }
 
-/** Make sure the music a utility channel needs is on its way. */
+const pictureTurn = new Map(); // channel id -> index into Bing's list, so each track gets the next picture
+
+/** The next Bing picture for a channel, or null when none is available (the card paints its own background). */
+async function nextBingPicture(channelId) {
+  let images = await bingImages();
+  if (!images.length) images = keptBingImages();
+  if (!images.length) return null;
+  const i = (pictureTurn.get(channelId) || 0) % images.length;
+  pictureTurn.set(channelId, i + 1);
+  return images[i];
+}
+
+/** Make sure the music a utility channel needs is on its way (and, for the news, the pictures of the day). */
 export function warmUtility(channel) {
   const u = utilityOf(channel);
   if (u?.music && knownSet(u.music)) ensureSet(u.music);
+  if (u?.kind === 'news') bingImages().catch(() => {});
 }
 
 export const _test = { HOUR };

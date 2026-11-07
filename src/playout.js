@@ -484,6 +484,7 @@ export class ChannelRunner {
       const burst = Math.max(4, Math.min(target, target - this.leadSeconds()));
       const produced = await this.runFfmpeg(this.utilityArgs(frame, track ? trackPath(track) : null, seconds, burst), { env: { TZ: store.getSettings().timezone } });
       fs.rm(frame.png, { force: true }, () => {});
+      if (frame.ticker) fs.rm(frame.ticker.file, { force: true }, () => {});
       if (produced.code !== 0 && produced.seconds < 5 && !this.stopped && !this.skipRequested) {
         if (++fails > 3) { this.setStatus({ state: 'error', message: 'Could not render the channel' }); return 'failed'; }
         await sleep(2000);
@@ -493,7 +494,13 @@ export class ChannelRunner {
     return 'done';
   }
 
-  /** ffmpeg arguments for one utility track: the still picture, the music, and the live clock in the corner. */
+  /**
+   * ffmpeg arguments for one utility track: the still picture, the music, and the live clock in the corner.
+   * With `frame.ticker`, a strip of headlines scrolls through the bar: the strip is decoded once and a
+   * window-wide crop of it moves across (overlaying the whole strip costs a core; cropping first costs
+   * a tenth of one). The crop's starting point follows the wall clock, so the next track carries on from
+   * where this one left the strip.
+   */
   utilityArgs(frame, audioFile, seconds, burst) {
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-readrate', '1'];
     if (this.capsBurst) args.push('-readrate_initial_burst', String(Math.round(burst)));
@@ -501,7 +508,14 @@ export class ChannelRunner {
     args.push('-loop', '1', '-framerate', '25', '-i', frame.png);
     if (audioFile) args.push('-i', audioFile);
     else args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+    const t = frame.ticker;
+    if (t) args.push('-i', t.file);
     const vf = [];
+    if (t) {
+      const offset = Math.round(((Date.now() / 1000) * t.speed) % t.contentWidth);
+      vf.push(`[2:v]loop=loop=-1:size=1:start=0,setpts=N/(25*TB),crop=w=${t.w}:h=${t.h}:x='mod(t*${t.speed}+${offset}\\,${t.contentWidth})':y=0[strip]`);
+      vf.push(`[0:v][strip]overlay=x=${t.x}:y=${t.y}:shortest=1[pic]`);
+    }
     if (upNextFont && frame.clockBox) {
       const b = frame.clockBox;
       const font = upNextFont.replace(/\\/g, '/').replace(/:/g, '\\:');
@@ -512,8 +526,14 @@ export class ChannelRunner {
       vf.push(`drawtext=fontfile='${font}':text='%{localtime\\:%A, %B %-d}':fontsize=${Math.round(b.h * 0.17)}:fontcolor=0xc9ced9:x=${right}-tw:y=${b.y + Math.round(b.h * 0.6)}`);
     }
     vf.push('format=yuv420p');
-    args.push('-t', seconds.toFixed(2), '-map', '0:v:0', '-map', '1:a:0', '-vf', vf.join(','),
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-crf', '20', '-r', '25', '-g', '50', '-keyint_min', '50', '-sc_threshold', '0',
+    args.push('-t', seconds.toFixed(2));
+    if (t) {
+      // The first two entries are labelled graphs; the rest chain from [pic] to the output.
+      const [crop, over, ...rest] = vf;
+      args.push('-filter_complex', `${crop};${over};[pic]${rest.join(',')}[out]`, '-map', '[out]', '-map', '1:a:0');
+    } else args.push('-map', '0:v:0', '-map', '1:a:0', '-vf', vf.join(','));
+    if (audioFile && frame.audioGainDb) args.push('-af', `volume=${frame.audioGainDb}dB`);
+    args.push('-c:v', 'libx264', '-preset', 'ultrafast', ...(t ? [] : ['-tune', 'stillimage']), '-crf', '20', '-r', '25', '-g', '50', '-keyint_min', '50', '-sc_threshold', '0',
       '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000', '-sn', '-dn');
     return args;
   }
