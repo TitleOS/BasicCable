@@ -163,6 +163,37 @@ test('an off-season team shows its last game from the season before', async () =
   assert.equal(sports.dayLabel(g.last.date, ZONE), 'Sun, Sep 27');
 });
 
+test('a team whose games are filed under another id is found by name; postponed games don\'t count as played', async () => {
+  sports._test.reset();
+  const now = Date.UTC(2026, 10, 15, 14);
+  const day = (ms) => new Date(ms).toISOString().slice(0, 10).replace(/-/g, '');
+  const mankato = (id, us, them, extra = {}) => ({
+    status: { type: { state: 'post', completed: true } }, ...extra,
+    competitors: [
+      { homeAway: 'away', team: { id, displayName: 'Minnesota State Mavericks', abbreviation: 'MNST' }, score: String(us), winner: us > them },
+      { homeAway: 'home', team: { id: '132', displayName: 'Bemidji State Beavers', abbreviation: 'BSU' }, score: String(them), winner: them > us },
+    ],
+  });
+  const base = `${SITE}/hockey/womens-college-hockey`;
+  const routes = {
+    [`${base}/teams/2364/schedule`]: { team: { displayName: 'Minnesota State Mavericks', abbreviation: 'MNST' }, requestedSeason: { year: 2027 }, events: [] },
+    [`${base}/scoreboard?dates=${day(now)}`]: { events: [] },
+    [`${base}/scoreboard?dates=${day(now - DAY)}`]: { events: [{ competitions: [mankato('24059', 0, 1)] }] },
+    [`${base}/teams/24059/schedule`]: { team: { displayName: 'Minnesota State Mavericks', abbreviation: 'MNST' }, events: [
+      { id: '1', date: new Date(now - 2 * DAY).toISOString(), competitions: [mankato('24059', 3, 2)] },
+      { id: '2', date: new Date(now - DAY).toISOString(), competitions: [mankato('24059', 0, 1)] },
+      // postponed: 'post' but not completed, and no score
+      { id: '3', date: new Date(now - 3 * HOUR).toISOString(), competitions: [{ ...mankato('24059', 0, 0), status: { type: { state: 'post', completed: false, shortDetail: 'Postponed' } }, competitors: mankato('24059', 0, 0).competitors.map((c) => ({ ...c, score: undefined, winner: undefined })) }] },
+    ] },
+  };
+  const g = await sports.teamGames('wchockey', '2364', { fetchImpl: fakeFetch(routes), now });
+  assert.equal(sports._test.altIds.get('wchockey:2364').id, '24059');
+  assert.equal(g.last.id, '2', 'the last game actually played, not the postponed one');
+  assert.equal(sports.resultOf(g.last), 'L');
+  assert.equal(g.live, null);
+  assert.equal(g.next, null);
+});
+
 test('over-the-air channels are read from NETWORK = channel lines', () => {
   assert.deepEqual(sports.parseOta('FOX = 9\nnbc: 11\n\n KSTC = 45.1 '), { FOX: '9', nbc: '11', KSTC: '45.1' });
   assert.deepEqual(sports.parseOta({ CBS: 4 }), { CBS: '4' });

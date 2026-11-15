@@ -339,10 +339,9 @@ async function renderSports(channel, u, { nowPlaying, dir, name, width, height, 
   const zone = store.getSettings().timezone || config.timezone;
   let cards = [];
   let message = '';
-  if (!Array.isArray(u.teams) && !indexStatus().ready) {
-    ensureTeamIndex().catch(() => {});
-    message = 'Finding the teams in every league… scores appear in a few minutes.';
-  }
+  // Builds the team list the first time, and again once it's a month old; returns at once otherwise.
+  ensureTeamIndex().catch(() => {});
+  if (!Array.isArray(u.teams) && !indexStatus().ready) message = 'Finding the teams in every league… scores appear in a minute or two.';
   try {
     cards = await sportsCards(u);
   } catch (e) {

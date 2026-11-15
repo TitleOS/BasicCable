@@ -809,7 +809,7 @@ function sportsSettings(u) {
       const pct = r.index.total ? ` (${Math.round((100 * r.index.done) / r.index.total)}%)` : '';
       teamBox.replaceChildren(h('span', { class: 'hint' }, r.index.error && !r.index.building
         ? `The team list could not be built: ${r.index.error}. Save anyway and it is tried again.`
-        : `Finding every team's home state, a one-time job of a few minutes${pct}… You can save now; the channel uses the default teams until you pick.`));
+        : `Finding every team's home state, a one-time job of about a minute${pct}… You can save now; the channel uses the default teams until you pick.`));
       timer = setTimeout(() => { if (teamBox.isConnected) load(); }, 3000); // stops once the page is left
       return;
     }

@@ -370,20 +370,59 @@ const GAME_WINDOW = 6 * HOUR;
  * current score; `next` the next game. Off-season teams (a new season with nothing played yet) get their last
  * game from the season before.
  */
+const altIds = new Map(); // "league:id" -> { id (or null: none found), at }: a team listed under one id that plays under another
+const ALT_RETRY = 6 * HOUR;
+
+/**
+ * The id a team's games are filed under, when the league's team list gives another (ESPN lists Minnesota
+ * State women's hockey as 2364, and its games say 24059). Looks through the last ten days' scoreboards for a
+ * team of the same name. Null when there's none.
+ */
+async function findAltId(L, id, name, { fetchImpl, now }) {
+  const want = norm(name);
+  for (let i = 0; i < 10 && want; i++) {
+    let sb;
+    try {
+      sb = await cached(`${SITE}/${L.path}/scoreboard?dates=${ymd(now - i * DAY)}`, OLD_SEASON_TTL, { fetchImpl, now });
+    } catch { continue; }
+    for (const e of sb.events || []) {
+      for (const x of e.competitions?.[0]?.competitors || []) {
+        const t = x.team || {};
+        if (norm(t.displayName) === want && String(t.id) !== String(id)) return String(t.id);
+      }
+    }
+  }
+  return null;
+}
+
 export async function teamGames(league, id, { fetchImpl, now = Date.now() } = {}) {
   const L = LEAGUE[league];
   if (!L) throw new Error(`Unknown league ${league}`);
-  const base = `${SITE}/${L.path}/teams/${id}/schedule`;
+  const key = `${league}:${id}`;
+  const sid = altIds.get(key)?.id || id; // the id its games are filed under
+  const base = `${SITE}/${L.path}/teams/${sid}/schedule`;
   const d = await cached(base, SCHEDULE_TTL, { fetchImpl, now });
   const team = d.team ? { name: d.team.displayName || '', abbr: d.team.abbreviation || '', color: hex(d.team.color) } : null;
-  let games = (d.events || []).map((e) => parseGame(e, id)).filter(Boolean);
+  let games = (d.events || []).map((e) => parseGame(e, sid)).filter(Boolean);
   if (!games.some((g) => g.completed)) {
     const year = Number(d.requestedSeason?.year || d.season?.year || new Date(now).getUTCFullYear()) - 1;
     for (const type of [2, 3]) {
       try {
         const old = await cached(`${base}?season=${year}&seasontype=${type}`, OLD_SEASON_TTL, { fetchImpl, now });
-        games = games.concat((old.events || []).map((e) => parseGame(e, id)).filter(Boolean));
+        games = games.concat((old.events || []).map((e) => parseGame(e, sid)).filter(Boolean));
       } catch { /* no such season type */ }
+    }
+  }
+  if (!games.length && sid === id && team?.name) {
+    // Nothing at all, this season or last: the team may be filed under another id.
+    const tried = altIds.get(key);
+    if (!tried || now - tried.at > ALT_RETRY) {
+      const alt = await findAltId(L, id, team.name, { fetchImpl, now });
+      altIds.set(key, { id: alt, at: now });
+      if (alt) {
+        log.info(`sports: ${L.label} ${team.name} plays under id ${alt}, not ${id}`);
+        return teamGames(league, id, { fetchImpl, now });
+      }
     }
   }
   games.sort((a, b) => a.date - b.date);
@@ -393,7 +432,7 @@ export async function teamGames(league, id, { fetchImpl, now = Date.now() } = {}
     try {
       const s = await cached(`${SITE}/${L.path}/summary?event=${live.id}`, LIVE_TTL, { fetchImpl, now });
       const comp = s.header?.competitions?.[0];
-      const fresh = comp && parseGame({ id: live.id, date: comp.date || new Date(live.date).toISOString(), broadcasts: s.broadcasts }, id, comp);
+      const fresh = comp && parseGame({ id: live.id, date: comp.date || new Date(live.date).toISOString(), broadcasts: s.broadcasts }, sid, comp);
       if (fresh) {
         if (!fresh.broadcasts.length) fresh.broadcasts = live.broadcasts;
         Object.assign(live, fresh);
@@ -404,7 +443,8 @@ export async function teamGames(league, id, { fetchImpl, now = Date.now() } = {}
     if (live.completed || live.state === 'post') live = null;
     else if (live.state === 'pre') live = null; // not started yet after all (a delay)
   }
-  const done = games.filter((g) => g.completed || g.state === 'post');
+  // Postponed and cancelled games are 'post' too, but not completed, and have no score: they don't count.
+  const done = games.filter((g) => g.completed);
   const last = done.length ? done[done.length - 1] : null;
   const next = games.find((g) => !g.completed && g.state !== 'post' && g !== live && g.date > now) || null;
   return { team, last, live, next };
@@ -596,4 +636,4 @@ export function paginate(cards, per = CARDS_PER_PAGE) {
   return pages.length ? pages : [[]];
 }
 
-export const _test = { cache, reset: () => { index = null; building = null; cache.clear(); progress = { done: 0, total: 0, error: null }; }, mapLimit };
+export const _test = { cache, altIds, reset: () => { index = null; building = null; cache.clear(); altIds.clear(); progress = { done: 0, total: 0, error: null }; }, mapLimit };
