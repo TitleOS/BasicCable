@@ -244,7 +244,7 @@ export function registerAddon(router) {
         if (r.description) out.push(`    <desc>${x(r.description)}</desc>`);
         if (r.season != null) out.push(`    <episode-num system="xmltv_ns">${r.season - 1}.${r.episode - 1}.</episode-num>`);
         if (r.poster) out.push(`    <icon src="${x(r.poster)}"/>`);
-        out.push(`    <category>${r.type === 'movie' ? 'Movie' : r.type === 'utility' ? (r.meta_id === 'utility:weather' ? 'Weather' : 'News') : 'Series'}</category>`);
+        out.push(`    <category>${r.type === 'movie' ? 'Movie' : r.type === 'utility' ? ({ 'utility:weather': 'Weather', 'utility:sports': 'Sports' }[r.meta_id] || 'News') : 'Series'}</category>`);
         out.push('  </programme>');
       }
     }

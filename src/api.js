@@ -11,6 +11,7 @@ import * as ads from './commercials.js';
 import fs from 'node:fs';
 import { runnerStatus, stopRunner, ffmpegCaps } from './playout.js';
 import { UTILITY_KINDS, listUtilities, utilityChannel, utilityConfig, warmUtility } from './utilities.js';
+import { STATES, ensureTeamIndex, indexStatus, teamsInState, teamKey, defaultOn, leagueOf } from './sports.js';
 import { allSets, ensureSet, scanOwn, listTracks, knownSet } from './music.js';
 
 const A = { auth: true };
@@ -627,6 +628,25 @@ export function registerApi(router) {
   router.get('/api/utilities', (req, res) => send(res, 200, { utilities: listUtilities(), music: allSets() }), A);
   router.put('/api/utilities/:kind', async (req, res, { kind }) => {
     send(res, 200, await configureUtilityOp(kind, await readJson(req)));
+  }, A);
+  // The teams in a state for the sports channel's checklist, with which are ticked: the channel's own choice
+  // for its state, else pro teams and Division I programs. Starts building the team list if there is none.
+  router.get('/api/sports/teams', (req, res) => {
+    const state = String(new URL(req.url, 'http://x').searchParams.get('state') || '').toUpperCase();
+    if (!STATES[state]) throw new HttpError(400, 'Pick a state');
+    ensureTeamIndex().catch(() => {});
+    const cfg = utilityChannel('sports')?.options?.utility;
+    const chosen = cfg?.state === state && Array.isArray(cfg.teams) ? new Set(cfg.teams) : null;
+    const teams = teamsInState(state).map((t) => {
+      const L = leagueOf(t.league);
+      return { key: teamKey(t), name: t.name, abbr: t.abbr, league: L.label, sport: L.sport, gender: L.gender, level: L.level, d1: t.d1, on: chosen ? chosen.has(teamKey(t)) : defaultOn(t) };
+    });
+    send(res, 200, { state, index: indexStatus(), teams });
+  }, A);
+  // Build the team list again (teams move, new programs start); it runs in the background.
+  router.post('/api/sports/refresh', (req, res) => {
+    ensureTeamIndex({ force: true }).catch(() => {});
+    send(res, 202, { index: indexStatus() });
   }, A);
   router.get('/api/music/:set', (req, res, { set }) => {
     if (!knownSet(set)) throw new HttpError(404, 'No such music set');

@@ -13,6 +13,8 @@ import { weatherCard } from './weathercard.js';
 import { ensureSet, setStatus, knownSet } from './music.js';
 import { DEFAULT_SOURCES, MAX_FEEDS, checkFeed, feedUrl, activeSources, fetchHeadlines, sourceStatus, bingImages, keptBingImages } from './news.js';
 import { newsCard, newsLayout, tickerStrip } from './newscard.js';
+import { STATES, EVENT_SPORTS, DEFAULT_OTA, parseOta, ensureTeamIndex, indexStatus, sportsCards, paginate, selectedTeams } from './sports.js';
+import { sportsPage, sportsLayout } from './sportscard.js';
 
 const HOUR = 3600e3;
 const FORECAST_TTL = 15 * 60 * 1000;
@@ -31,7 +33,16 @@ export const UTILITY_KINDS = {
     defaults: { sources: { ap: true, npr: true, pbs: true }, feeds: [], music: 'jazz' },
     musicGainDb: -9, // the user asked for the music low
   },
+  sports: {
+    name: 'Sports',
+    channelName: 'Sports',
+    description: 'Scorecards for the teams in your state, pro and college, men\'s and women\'s: each team\'s last game, who it played, the final score and the date. A game in progress shows LIVE with the score as it stands and the over-the-air channel carrying it. UFC, golf, tennis and racing can be added. Big band jazz plays underneath.',
+    defaults: { state: '', teams: null, extras: {}, ota: {}, music: 'jazz' },
+    musicGainDb: -6,
+  },
 };
+
+export const SPORTS_PAGE_SECONDS = 12;
 
 export const utilityOf = (channel) => channel?.options?.utility || null;
 export const isUtilityItem = (item) => item?.type === 'utility';
@@ -82,6 +93,37 @@ export async function utilityConfig(kind, body, previous = null, notes = {}) {
     }
     if (!activeSources(cfg).length) throw Object.assign(new Error('Turn on at least one source or add a feed'), { status: 400 });
   }
+  if (kind === 'sports') {
+    if (body.state !== undefined) {
+      const st = String(body.state || '').trim().toUpperCase();
+      if (!STATES[st]) throw Object.assign(new Error('Pick a state'), { status: 400 });
+      if (st !== cfg.state) {
+        // A new state starts from its own teams and, where known, its own over-the-air channels.
+        cfg.teams = null;
+        if (body.ota === undefined) cfg.ota = { ...(DEFAULT_OTA[st] || {}) };
+      }
+      cfg.state = st;
+    }
+    if (body.teams !== undefined) {
+      if (body.teams === null) cfg.teams = null;
+      else {
+        if (!Array.isArray(body.teams)) throw Object.assign(new Error('teams must be a list of league:id keys'), { status: 400 });
+        cfg.teams = [...new Set(body.teams.map(String).filter((k) => /^[a-z]+:\d+$/.test(k)))].slice(0, 200);
+      }
+    }
+    if (body.extras !== undefined) {
+      if (!body.extras || typeof body.extras !== 'object') throw Object.assign(new Error('extras must be an object of sport: true/false'), { status: 400 });
+      cfg.extras = Object.fromEntries(Object.keys(EVENT_SPORTS).filter((k) => body.extras[k] === true || body.extras[k] === 'true').map((k) => [k, true]));
+    }
+    if (body.ota !== undefined) {
+      try { cfg.ota = parseOta(body.ota); } catch (e) { throw Object.assign(new Error(e.message), { status: 400 }); }
+    }
+    if (body.music !== undefined) {
+      if (!knownSet(String(body.music))) throw Object.assign(new Error('Unknown music set'), { status: 400 });
+      cfg.music = String(body.music);
+    }
+    if (!cfg.state) throw Object.assign(new Error('Pick a state'), { status: 400 });
+  }
   if (kind === 'weather') {
     if (body.days !== undefined) {
       const d = parseInt(body.days, 10);
@@ -126,6 +168,10 @@ export function listUtilities() {
       music: cfg.music ? setStatus(cfg.music) : null,
       sources: kind === 'news' ? sourceStatus(cfg) : undefined,
       defaultSources: kind === 'news' ? Object.fromEntries(Object.entries(DEFAULT_SOURCES).map(([k, d]) => [k, { name: d.name, url: d.url }])) : undefined,
+      sports: kind === 'sports' ? {
+        states: STATES, index: indexStatus(), defaultOta: DEFAULT_OTA,
+        extras: Object.entries(EVENT_SPORTS).map(([k, d]) => ({ key: k, name: d.name })),
+      } : undefined,
     };
   });
 }
@@ -175,6 +221,14 @@ export function utilityText(u) {
   if (u?.kind === 'news') {
     const srcs = sourcesLabel(u);
     return { title: 'Headlines', subtitle: activeSources(u).map((s) => s.tag).join(' · '), description: `The latest headlines from ${srcs}, over Bing's picture of the day, with jazz.` };
+  }
+  if (u?.kind === 'sports') {
+    const where = STATES[u.state] || '';
+    const extras = Object.keys(EVENT_SPORTS).filter((k) => u.extras?.[k]).map((k) => EVENT_SPORTS[k].label);
+    return {
+      title: 'Scoreboard', subtitle: where,
+      description: `Final scores and live games for ${where || 'your state'}'s teams${extras.length ? `, plus ${extras.join(', ')}` : ''}, with big band jazz.`,
+    };
   }
   const def = UTILITY_KINDS[u?.kind];
   return { title: def?.name || u?.kind || 'Utility', subtitle: '', description: def?.description || '' };
@@ -272,7 +326,49 @@ export async function renderUtilityFrame(channel, { nowPlaying = '', dir, name =
       headlines: headlines.length,
     };
   }
+  if (u.kind === 'sports') return renderSports(channel, u, { nowPlaying, dir, name, width, height, svgFile, png });
   throw new Error(`Unknown utility ${u.kind}`);
+}
+
+/**
+ * The sports channel's picture: every page of scorecards, side by side in one wide image that the playout
+ * crops a page at a time (a page every SPORTS_PAGE_SECONDS). Redrawn every few minutes, and every minute while
+ * a game is on, so live scores keep up (`refreshSeconds`).
+ */
+async function renderSports(channel, u, { nowPlaying, dir, name, width, height, svgFile, png }) {
+  const zone = store.getSettings().timezone || config.timezone;
+  let cards = [];
+  let message = '';
+  if (!Array.isArray(u.teams) && !indexStatus().ready) {
+    ensureTeamIndex().catch(() => {});
+    message = 'Finding the teams in every league… scores appear in a few minutes.';
+  }
+  try {
+    cards = await sportsCards(u);
+  } catch (e) {
+    log.warn(`channel ${channel.number}: scores: ${e.message}`);
+  }
+  if (!cards.length && !message && !selectedTeams(u).length && !Object.values(u.extras || {}).some(Boolean)) message = 'No teams picked yet: choose some on the Utilities page.';
+  const pages = paginate(cards);
+  const title = STATES[u.state] || '';
+  const files = [];
+  for (let i = 0; i < pages.length; i++) {
+    fs.writeFileSync(svgFile, sportsPage(pages[i], { width, height, title, page: i + 1, pages: pages.length, nowPlaying, zone, message }));
+    const out = i === 0 ? png : path.join(dir, `${name}-p${i + 1}.bmp`);
+    await ffmpeg(['-i', svgFile, '-frames:v', '1', '-pix_fmt', 'bgr24', '-update', '1', out], 'the scores');
+    files.push(out);
+  }
+  fs.rmSync(svgFile, { force: true });
+  const live = cards.some((c) => c.live);
+  const frame = { png, clockBox: sportsLayout(width, height).clockBox, width, height, audioGainDb: UTILITY_KINDS.sports.musicGainDb, refreshSeconds: live ? 60 : 180, cards: cards.length, live };
+  if (files.length > 1) {
+    // All the pages in one row; the playout shows one page-wide window of it at a time.
+    const strip = path.join(dir, `${name}-pages.bmp`);
+    await ffmpeg([...files.flatMap((f) => ['-i', f]), '-filter_complex', `hstack=inputs=${files.length}`, '-frames:v', '1', '-pix_fmt', 'bgr24', '-update', '1', strip], 'the score pages');
+    for (const f of files.slice(1)) fs.rmSync(f, { force: true });
+    frame.pages = { file: strip, count: files.length, seconds: SPORTS_PAGE_SECONDS };
+  }
+  return frame;
 }
 
 const pictureTurn = new Map(); // channel id -> index into Bing's list, so each track gets the next picture
@@ -292,6 +388,7 @@ export function warmUtility(channel) {
   const u = utilityOf(channel);
   if (u?.music && knownSet(u.music)) ensureSet(u.music);
   if (u?.kind === 'news') bingImages().catch(() => {});
+  if (u?.kind === 'sports') ensureTeamIndex().catch(() => {});
 }
 
 export const _test = { HOUR };

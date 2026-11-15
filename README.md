@@ -21,7 +21,7 @@ Each channel has a guide that runs on the real clock. Open a channel in Stremio 
 - **No-repeat window**: a channel won't air the same episode or movie again within 3 days, or whatever window you set. Each channel keeps 90 days of history, shown in the channel editor. If every choice is a repeat (a small pool), the one shown longest ago plays. Episodes that were cut short don't count.
 - **Commercial breaks**: upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps") and play 1–3 of them between programs. See [Commercials](#commercials).
 - **"Up next" box**: optionally, during a program's last minute, a box in the corner shows the next two programs. See [Up next box](#up-next-box).
-- **Weather and news channels**: generated channels with the forecast for your zip code over classical music, and the latest headlines from AP, NPR, PBS and your own RSS feeds scrolling over Bing's picture of the day, with jazz. See [Utility channels](#utility-channels).
+- **Weather, news and sports channels**: generated channels with the forecast for your zip code over classical music; the latest headlines from AP, NPR, PBS and your own RSS feeds scrolling over Bing's picture of the day, with jazz; and scorecards for your state's pro and college teams, with LIVE scores and the over-the-air channel carrying each game. See [Utility channels](#utility-channels).
 - **Carries on after a restart**: a channel that was playing when the container restarted resumes with the same stream, without asking the addons again. See [Restarts](#restarts).
 - **Streams picked in advance**: about 10 minutes before a program starts, its file is chosen and checked. Tuning in then only has to start the video. See [Fast tune-in](#fast-tune-in).
 - **Backup and restore**: export channels, pools, wildcards, slots and each show's progress to one JSON file and import it elsewhere. See [Backup and restore](#backup-and-restore).
@@ -229,6 +229,21 @@ Tick the sources to read (Associated Press, NPR, PBS News Hour) and add any RSS 
 - the song playing, and the date and time, along the bottom.
 
 The music is a set of jazz recordings by the US Air Force's jazz ensembles (the Airmen of Note, Shades of Blue, Dimensions in Blue, the Dixie Players): US government recordings, so public domain. It plays quietly, about 9 dB under the weather channel. The set is listed in `src/musicsets.js` and downloaded once into `music/jazz/` (about 420 MB to download, 300 MB kept); your own files go in `music/jazz/own/`. A moving bar costs more than a still picture: while someone is watching, the channel takes about 60% of a CPU core at 1080p.
+
+### Sports
+
+Choose a state. Its teams are listed: pro (MLB, NBA, WNBA, NFL, NHL, MLS, NWSL) and college (NCAA football, men's and women's basketball, baseball, softball, men's and women's hockey, men's and women's soccer). Pro teams and Division I programs start ticked; smaller college programs are listed too, unticked. The channel shows pages of eight scorecards, turning every 12 seconds:
+
+- each team's last game: who it played, home or away, the final score with W or L, and the date;
+- a game in progress instead: **LIVE** in red, the score as it stands and the period or inning, and the over-the-air channel carrying it ("On KSTC · channel 45"). While one to three games are on, they stay at the top of every page;
+- the team's next game along the bottom of its card, with its channel when it's over the air;
+- the song playing, and the date and time, along the bottom of the page.
+
+Under **More sports**, tick UFC, PFL, PGA Tour and LPGA golf, ATP and WTA tennis, Formula 1, NASCAR or IndyCar. Each gets a card with its latest event: the main event's result, the golf leader or winner, the tennis champion, the race winner, or LIVE while it's on. When the next event is still to come, the card shows the last one's result and the next one's date.
+
+**Over-the-air channels** tells the channel which number each network is on where you live, one per line (`FOX = 9`), using the network names ESPN gives (ABC, CBS, FOX, NBC, CW, ION, or a station's call sign like KSTC). ESPN doesn't know channel numbers, so this list is yours to fill in; for Minnesota it starts with the Twin Cities stations. A live game on a network that isn't listed shows its network instead ("On ESPN").
+
+Scores come from ESPN's public scoreboard data, which needs no account. The first time the channel is turned on, Basic Cable looks up every team's home state, a one-time job of a few thousand small requests that takes a few minutes; the list is kept in `sports/teams.json` in the data volume and rebuilt monthly. Schedules are refreshed every 15 minutes, and a game's score every minute while it's on; the picture is redrawn every three minutes, and every minute while a game is on. The women's pro hockey league (PWHL) isn't in ESPN's data, so the Minnesota Frost aren't listed. The music is the jazz set from the news channel, a little louder.
 
 ## Restarts
 

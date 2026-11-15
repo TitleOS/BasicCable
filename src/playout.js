@@ -462,11 +462,15 @@ export class ChannelRunner {
     this.setStatus({ state: 'playing', item: { ...item, label: itemLabel(item) }, stream: { label: 'Generated live', resolution: channel.resolution }, message: '' });
     const recent = recentTracks.get(this.channelId) || [];
     let fails = 0;
+    // A picture that has to be redrawn more often than a song lasts (the live scores) plays the song in parts:
+    // `cont` is the song still playing and where the next part starts.
+    let cont = null;
     while (!this.stopped && !this.skipRequested) {
       const left = (item.end - this.clock()) / 1000;
       if (left < 3) break;
-      const track = pickTrack(u.music || 'classical', recent);
-      const seconds = Math.min(left, track ? track.duration : 300);
+      const track = cont ? cont.track : pickTrack(u.music || 'classical', recent);
+      const offset = cont ? cont.offset : 0;
+      let seconds = Math.min(left, track ? track.duration - offset : 300);
       let frame;
       try {
         frame = await renderUtilityFrame(channel, { nowPlaying: track ? trackLabel(track) : '', dir: this.dir, name: `frame-${this.program + 1}` });
@@ -474,17 +478,23 @@ export class ChannelRunner {
         log.warn(`channel ${channel.number}: ${e.message}`);
         this.setStatus({ state: 'error', message: redact(e.message) });
         if (++fails > 3) return 'failed';
+        cont = null;
         await this.playSlate(itemLabel(item), redact(e.message), Math.min(60, left));
         continue;
       }
-      if (track) { recent.push(track.id); recentTracks.set(this.channelId, recent.slice(-15)); }
+      // Leave a part of at least 20 s for the end of the song rather than a sliver.
+      if (frame.refreshSeconds && seconds > frame.refreshSeconds + 20) seconds = frame.refreshSeconds;
+      if (track && !cont) { recent.push(track.id); recentTracks.set(this.channelId, recent.slice(-15)); }
+      cont = track && offset + seconds < track.duration - 1 ? { track, offset: offset + seconds } : null;
       this.status.stream = { label: track ? trackLabel(track) : 'Music is still downloading', resolution: channel.resolution, codec: 'h264', height: frame.height };
-      log.info(`channel ${channel.number}: ${itemLabel(item)}: ${track ? trackLabel(track) : 'no music yet'} (${Math.round(seconds)}s)`);
+      if (!offset) log.info(`channel ${channel.number}: ${itemLabel(item)}: ${track ? trackLabel(track) : 'no music yet'} (${Math.round(track ? track.duration : seconds)}s)`);
       const target = this.leadTarget(null);
       const burst = Math.max(4, Math.min(target, target - this.leadSeconds()));
-      const produced = await this.runFfmpeg(this.utilityArgs(frame, track ? trackPath(track) : null, seconds, burst), { env: { TZ: store.getSettings().timezone } });
+      const produced = await this.runFfmpeg(this.utilityArgs(frame, track ? trackPath(track) : null, seconds, burst, offset), { env: { TZ: store.getSettings().timezone } });
       fs.rm(frame.png, { force: true }, () => {});
       if (frame.ticker) fs.rm(frame.ticker.file, { force: true }, () => {});
+      if (frame.pages) fs.rm(frame.pages.file, { force: true }, () => {});
+      if (produced.code !== 0 && produced.seconds < 5) cont = null;
       if (produced.code !== 0 && produced.seconds < 5 && !this.stopped && !this.skipRequested) {
         if (++fails > 3) { this.setStatus({ state: 'error', message: 'Could not render the channel' }); return 'failed'; }
         await sleep(2000);
@@ -501,20 +511,30 @@ export class ChannelRunner {
    * a tenth of one). The crop's starting point follows the wall clock, so the next track carries on from
    * where this one left the strip.
    */
-  utilityArgs(frame, audioFile, seconds, burst) {
+  utilityArgs(frame, audioFile, seconds, burst, audioOffset = 0) {
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-readrate', '1'];
     if (this.capsBurst) args.push('-readrate_initial_burst', String(Math.round(burst)));
     // Only the picture is paced: pacing the music too would hold the tune-in burst back to real time.
     args.push('-loop', '1', '-framerate', '25', '-i', frame.png);
-    if (audioFile) args.push('-i', audioFile);
-    else args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+    if (audioFile) {
+      if (audioOffset > 0) args.push('-ss', audioOffset.toFixed(2)); // the rest of a song begun in the last part
+      args.push('-i', audioFile);
+    } else args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
     const t = frame.ticker;
+    const p = frame.pages;
     if (t) args.push('-i', t.file);
+    else if (p) args.push('-i', p.file);
     const vf = [];
     if (t) {
       const offset = Math.round(((Date.now() / 1000) * t.speed) % t.contentWidth);
       vf.push(`[2:v]loop=loop=-1:size=1:start=0,setpts=N/(25*TB),crop=w=${t.w}:h=${t.h}:x='mod(t*${t.speed}+${offset}\\,${t.contentWidth})':y=0[strip]`);
       vf.push(`[0:v][strip]overlay=x=${t.x}:y=${t.y}:shortest=1[pic]`);
+    } else if (p) {
+      // Pages side by side in one image, decoded once; a page-wide window steps along it every p.seconds,
+      // in step with the wall clock so the next part carries on the turn.
+      const offset = ((Date.now() / 1000) % (p.seconds * p.count)).toFixed(2);
+      vf.push(`[2:v]loop=loop=-1:size=1:start=0,setpts=N/(25*TB),crop=w=${frame.width}:h=${frame.height}:x='${frame.width}*mod(floor((t+${offset})/${p.seconds})\\,${p.count})':y=0[strip]`);
+      vf.push('[0:v][strip]overlay=x=0:y=0:shortest=1[pic]');
     }
     if (upNextFont && frame.clockBox) {
       const b = frame.clockBox;
@@ -527,13 +547,13 @@ export class ChannelRunner {
     }
     vf.push('format=yuv420p');
     args.push('-t', seconds.toFixed(2));
-    if (t) {
+    if (t || p) {
       // The first two entries are labelled graphs; the rest chain from [pic] to the output.
       const [crop, over, ...rest] = vf;
       args.push('-filter_complex', `${crop};${over};[pic]${rest.join(',')}[out]`, '-map', '[out]', '-map', '1:a:0');
     } else args.push('-map', '0:v:0', '-map', '1:a:0', '-vf', vf.join(','));
     if (audioFile && frame.audioGainDb) args.push('-af', `volume=${frame.audioGainDb}dB`);
-    args.push('-c:v', 'libx264', '-preset', 'ultrafast', ...(t ? [] : ['-tune', 'stillimage']), '-crf', '20', '-r', '25', '-g', '50', '-keyint_min', '50', '-sc_threshold', '0',
+    args.push('-c:v', 'libx264', '-preset', 'ultrafast', ...(t || p ? [] : ['-tune', 'stillimage']), '-crf', '20', '-r', '25', '-g', '50', '-keyint_min', '50', '-sc_threshold', '0',
       '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000', '-sn', '-dn');
     return args;
   }

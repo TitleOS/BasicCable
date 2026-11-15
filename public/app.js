@@ -249,7 +249,7 @@ async function viewChannels(id) {
     editor.append(channelForm(ch),
       h('div', { class: 'panel' }, h('h2', {}, 'Generated channel'),
         h('p', { class: 'hint' }, 'This channel is drawn live by Basic Cable, so it has no pool, time slots or commercial breaks. ',
-          `Its settings (${ch.options.utility.kind === 'news' ? 'sources and feeds' : 'place, forecast length, units'}) are on the `, h('a', { href: '#/utilities' }, 'Utilities'), ' page.')),
+          `Its settings (${{ news: 'sources and feeds', sports: 'state, teams, more sports, over-the-air channels' }[ch.options.utility.kind] || 'place, forecast length, units'}) are on the `, h('a', { href: '#/utilities' }, 'Utilities'), ' page.')),
       dangerPanel(ch));
     return;
   }
@@ -700,6 +700,8 @@ function utilityPanel(u) {
   const c = u.config || {};
   const field = (label, el, hint) => h('label', { class: 'field' }, label, el, hint ? h('span', { class: 'hint' }, hint) : null);
   const news = u.kind === 'news';
+  const sports = u.kind === 'sports';
+  const sp = sports ? sportsSettings(u) : null;
   const f = {
     enabled: h('input', { type: 'checkbox', checked: u.enabled }),
     number: h('input', { type: 'number', min: 1, value: u.channel?.number ?? '', placeholder: 'auto', style: { width: '110px' } }),
@@ -722,7 +724,8 @@ function utilityPanel(u) {
     if (news) {
       body.sources = Object.fromEntries(Object.entries(f.sources).map(([k, el]) => [k, el.checked]));
       body.feeds = f.feeds.value.split('\n').map((s) => s.trim()).filter(Boolean);
-    } else Object.assign(body, { place: f.place.value, days: Number(f.days.value), units: f.units.value });
+    } else if (sports) Object.assign(body, sp.body());
+    else Object.assign(body, { place: f.place.value, days: Number(f.days.value), units: f.units.value });
     const r = await api(`/api/utilities/${u.kind}`, { method: 'PUT', body });
     if (r.rejected?.length) {
       // Feeds that are not RSS or Atom are dropped on save and said so, as asked.
@@ -735,7 +738,9 @@ function utilityPanel(u) {
     const s = (u.sources || []).find((x) => x.key === key);
     return !s || !s.checked ? '' : s.error ? ` · not answering: ${s.error}` : ` · ${s.count} headline${s.count === 1 ? '' : 's'}`;
   };
-  const settings = news
+  const settings = sports
+    ? [...sp.fields, field('Channel number', f.number, 'Leave empty to take the next free number'), field('Channel name', f.name)]
+    : news
     ? [h('div', { class: 'field' }, 'Sources',
         ...Object.entries(u.defaultSources || {}).map(([k, d]) => h('label', { class: 'check' }, f.sources[k], `${d.name}${sourceStatus(k)}`)),
         h('span', { class: 'hint' }, 'AP no longer publishes a feed of its own, so its headlines come through Google News, limited to apnews.com.')),
@@ -761,6 +766,7 @@ function utilityPanel(u) {
       u.enabled ? h('a', { class: 'btn small ghost', href: stremioLink(u.channel.id) }, 'Open in Stremio') : null),
     h('p', { class: 'hint', style: { marginBottom: '12px' } }, u.description),
     h('div', { class: 'grid-form' }, ...settings),
+    sports ? sp.below : null,
     resolved,
     news ? h('p', { class: 'hint', style: { marginTop: '10px' } }, 'The background is Bing\'s picture of the day (the last eight, one per song, each with its credit). The music plays about 9 dB below the weather channel.') : null,
     m ? h('div', { class: 'field', style: { marginTop: '12px' } }, `Music: ${m.name}`,
@@ -771,6 +777,81 @@ function utilityPanel(u) {
       h('span', { class: 'spacer' }),
       m ? h('button', { class: 'btn ghost', onclick: (e) => rescan(e.currentTarget) }, 'Rescan music') : null,
       h('button', { class: 'btn primary', onclick: (e) => save(e.currentTarget) }, 'Save')));
+}
+
+/**
+ * The sports channel's settings: the state, the checklist of its teams (loaded from the server, which builds
+ * the team list the first time), more sports, and the over-the-air channels. Returns { fields, below, body }.
+ */
+function sportsSettings(u) {
+  const c = u.config || {};
+  const info = u.sports || { states: {}, extras: [], defaultOta: {} };
+  const state = h('select', {}, h('option', { value: '' }, 'Choose a state…'),
+    Object.entries(info.states).map(([k, name]) => h('option', { value: k, selected: k === c.state }, name)));
+  const extras = Object.fromEntries(info.extras.map((x) => [x.key, h('input', { type: 'checkbox', checked: !!c.extras?.[x.key] })]));
+  const otaText = (o) => Object.entries(o || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
+  const ota = h('textarea', { rows: 5, placeholder: 'One network per line, as ESPN names it:\nFOX = 9\nNBC = 11', style: { width: '100%' } }, otaText(c.ota));
+  const teamBox = h('div', { class: 'teams' });
+  let teams = null; // [{ key, el }] once loaded
+  let shownState = c.state || '';
+  let timer = null;
+  const group = (title, list) => h('div', { class: 'team-group' }, h('div', { class: 'team-group-title' }, title),
+    ...list.map((t) => h('label', { class: 'check' }, t.el, `${t.name} · ${t.league}${t.level === 'college' && !t.d1 ? ' (not Division I)' : ''}`)));
+  const load = async () => {
+    clearTimeout(timer);
+    const st = state.value;
+    if (!st) { teams = null; teamBox.replaceChildren(h('span', { class: 'hint' }, 'Choose a state to list its teams.')); return; }
+    const r = await api(`/api/sports/teams?state=${st}`).catch((e) => ({ error: e.message }));
+    if (state.value !== st) return;
+    if (r.error) { teamBox.replaceChildren(h('span', { class: 'hint' }, `Could not list the teams: ${r.error}`)); return; }
+    if (!r.index.ready) {
+      teams = null;
+      const pct = r.index.total ? ` (${Math.round((100 * r.index.done) / r.index.total)}%)` : '';
+      teamBox.replaceChildren(h('span', { class: 'hint' }, r.index.error && !r.index.building
+        ? `The team list could not be built: ${r.index.error}. Save anyway and it is tried again.`
+        : `Finding every team's home state, a one-time job of a few minutes${pct}… You can save now; the channel uses the default teams until you pick.`));
+      timer = setTimeout(() => { if (teamBox.isConnected) load(); }, 3000); // stops once the page is left
+      return;
+    }
+    teams = r.teams.map((t) => ({ ...t, el: h('input', { type: 'checkbox', checked: t.on }) }));
+    const pro = teams.filter((t) => t.level === 'pro');
+    const college = teams.filter((t) => t.level === 'college');
+    const schools = [...new Set(college.map((t) => t.name))];
+    const all = (on) => teams.forEach((t) => { t.el.checked = on(t); });
+    teamBox.replaceChildren(
+      h('div', { class: 'row', style: { gap: '8px', margin: '4px 0 8px' } },
+        h('span', { class: 'hint', style: { margin: 0 } }, `${teams.length} teams in ${info.states[st]}.`),
+        h('button', { class: 'btn small ghost', onclick: () => all(() => true) }, 'All'),
+        h('button', { class: 'btn small ghost', onclick: () => all(() => false) }, 'None'),
+        h('button', { class: 'btn small ghost', onclick: () => all((t) => t.level === 'pro' || t.d1) }, 'Pro and Division I')),
+      pro.length ? group('Pro', pro) : null,
+      ...schools.map((s) => group(s, college.filter((t) => t.name === s))),
+      teams.length ? null : h('span', { class: 'hint' }, 'No teams found in this state.'));
+  };
+  state.addEventListener('change', () => {
+    // A new state brings its own over-the-air channels when the box still holds the old state's.
+    if (otaText(info.defaultOta[shownState] || {}) === ota.value.trim() || !ota.value.trim()) ota.value = otaText(info.defaultOta[state.value] || {});
+    shownState = state.value;
+    load();
+  });
+  load();
+  return {
+    fields: [h('label', { class: 'field' }, 'State', state, h('span', { class: 'hint' }, 'Its pro and college teams are listed below.'))],
+    below: h('div', { style: { marginTop: '12px' } },
+      h('div', { class: 'field' }, 'Teams', teamBox),
+      h('div', { class: 'field', style: { marginTop: '12px' } }, 'More sports',
+        h('div', { class: 'grid-form' }, ...info.extras.map((x) => h('label', { class: 'check' }, extras[x.key], x.name))),
+        h('span', { class: 'hint' }, 'Each shows its latest event: the result, or LIVE with the leader while it is on.')),
+      h('label', { class: 'field', style: { marginTop: '12px' } }, 'Over-the-air channels', ota,
+        h('span', { class: 'hint' }, 'When a live game is on one of these networks, its card says which channel to turn to. ESPN names networks like FOX, CBS, NBC, ABC or a station like KSTC.'))),
+    body: () => ({
+      state: state.value,
+      // Until the list has loaded, the server keeps (or picks) the state's default teams.
+      ...(teams ? { teams: teams.filter((t) => t.el.checked).map((t) => t.key) } : {}),
+      extras: Object.fromEntries(Object.entries(extras).map(([k, el]) => [k, el.checked])),
+      ota: ota.value,
+    }),
+  };
 }
 
 // ---------------------------------------------------------------- settings
