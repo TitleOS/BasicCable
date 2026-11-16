@@ -790,8 +790,12 @@ export class ChannelRunner {
     w.forEach((fn) => fn());
   }
 
-  /** Wait until enough segments exist for a player to start. */
-  async waitReady(minSegments = 2, timeoutMs = 45000) {
+  /**
+   * Wait until a player can start: the first segment. The tune-in burst writes the next ones within seconds,
+   * well before a player asks for the playlist again; waiting for two cost a copied stream a whole segment
+   * (5 to 10 seconds) on every tune-in.
+   */
+  async waitReady(minSegments = 1, timeoutMs = 45000) {
     const until = Date.now() + timeoutMs;
     while (this.visibleCount() < minSegments && !this.stopped && Date.now() < until) {
       await Promise.race([new Promise((r) => this.waiters.push(r)), sleep(1000)]);

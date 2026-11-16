@@ -402,6 +402,31 @@ test('an episode that drifted inside the no-repeat window is swapped just before
   assert.equal(await avoidRepeat(item, store.getChannel(ch.id)), null);
 });
 
+test('random episodes come from those not shown lately: never shown first, then the ones shown longest ago', async () => {
+  seedSeries('tt070', 'Deck', 22, 1, 40);
+  const ch = store.createChannel({ name: 'Least Recent', round_minutes: 5, fill_mode: 'random', options: { noRepeatDays: 3 } });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt070', name: 'Deck' });
+  const now = Date.now();
+  // Episodes 1-30 aired 4 to 33 days ago: all outside the 3-day window, so all allowed. 31-40 never aired.
+  for (let ep = 1; ep <= 30; ep++) {
+    const at = now - (3 + ep) * 24 * HOUR;
+    store.run(`INSERT INTO history(channel_id, aired_at, ended_at, type, meta_id, video_id, title, season, episode, complete)
+      VALUES (?, ?, ?, 'series', 'tt070', ?, 'Deck', 1, ?, 1)`, ch.id, at, at + 22 * 60e3, `tt070:1:${ep}`, ep);
+  }
+  await buildChannel(ch.id, { now });
+  const eps = store.epgRange(ch.id, now - HOUR, Infinity).map((r) => Number(r.video_id.split(':')[2]));
+  assert.ok(eps.length >= 20, `planned ${eps.length}`);
+  assert.deepEqual([...eps.slice(0, 10)].sort((a, b) => a - b), [31, 32, 33, 34, 35, 36, 37, 38, 39, 40], 'the ten never shown come first');
+  // Then each pick is from the quarter of the not-yet-planned ones shown longest ago (the higher numbers here),
+  // never from last week's.
+  const left = Array.from({ length: 30 }, (_, i) => i + 1);
+  for (const ep of eps.slice(10, 20)) {
+    const oldest = [...left].sort((a, b) => b - a).slice(0, Math.ceil(left.length / 4));
+    assert.ok(oldest.includes(ep), `episode ${ep} (shown ${ep + 3} days ago) is among the oldest: ${oldest}`);
+    left.splice(left.indexOf(ep), 1);
+  }
+});
+
 test('a lineup shorter than the window is left alone (nothing fresher to swap in)', async () => {
   const { avoidRepeat } = await import('../src/prefetch.js');
   const { contentMinutes } = await import('../src/scheduler.js');

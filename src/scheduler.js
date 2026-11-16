@@ -2,7 +2,7 @@ import { DateTime } from 'luxon';
 import { store } from './db.js';
 import { config, log } from './config.js';
 import { getMeta, playableEpisodes, expandWildcard, episodeRuntime } from './metadata.js';
-import { lastShown, noRepeatDays } from './history.js';
+import { lastShown, noRepeatDays, KEEP_DAYS } from './history.js';
 import { breakAllowance } from './commercials.js';
 import { utilityOf, utilityRows } from './utilities.js';
 
@@ -143,6 +143,17 @@ class Planner {
     return last != null && Math.abs(at - last) < this.noRepeatMs;
   }
 
+  /**
+   * A random episode among those shown longest ago: any not shown in the history kept (90 days), else one from
+   * the quarter shown longest ago. A show then goes through all of its episodes before any comes round again.
+   */
+  leastRecent(eps) {
+    const never = eps.filter((e) => !this.shown.has(e.id));
+    const pool = never.length ? never
+      : [...eps].sort((a, b) => this.shown.get(a.id) - this.shown.get(b.id)).slice(0, Math.max(1, Math.ceil(eps.length / 4)));
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
   /** The row that ends where planning continues: the last planned row, or the last saved one. */
   previousRow() {
     return this.rows[this.rows.length - 1] || this.prevSaved;
@@ -164,7 +175,7 @@ class Planner {
     if (order === 'random') {
       ok = eps.filter((e) => !this.blocked(e.id));
       const fresh = ok.filter((e) => !this.isRepeat(e.id, at));
-      if (fresh.length) return { ep: fresh[Math.floor(Math.random() * fresh.length)], repeat: false };
+      if (fresh.length) return { ep: this.leastRecent(fresh), repeat: false };
     } else {
       const last = this.cursors[`ep:${entry.id}`];
       const idx = last ? eps.findIndex((e) => e.id === last) : -1;
@@ -463,7 +474,8 @@ async function doBuild(channelId, { rebuild = false, now = Date.now(), extend = 
 
     const recent = store.recentEpg(channelId, 20).map((r) => r.meta_id);
     const noRepeatMs = noRepeatDays(channel) * DAY;
-    const shown = noRepeatMs ? lastShown(channelId, t - noRepeatMs) : new Map();
+    // Everything the history keeps, not just the no-repeat window: random picks favour what was shown longest ago.
+    const shown = lastShown(channelId, t - KEEP_DAYS * DAY);
     const planner = new Planner(channel, lib, store.getCursors(channelId), recent, shown, noRepeatMs);
     const lastSaved = store.epgLast(channelId);
     if (lastSaved && lastSaved.end === t && !isUnplayable(lastSaved.video_id)) planner.prevSaved = { ...lastSaved };

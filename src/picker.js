@@ -2,6 +2,7 @@ import { store } from './db.js';
 import { log } from './config.js';
 import { fetchJson, cachedMeta } from './metadata.js';
 import { normalizeTitle, namesOtherTitle, yearRange } from './titlematch.js';
+import { broadcastId } from './seasons.js';
 
 export const RESOLUTIONS = [2160, 1440, 1080, 720, 576, 480];
 
@@ -182,7 +183,13 @@ export async function findStreams(item, channel, { fresh = false } = {}) {
 
   const addons = store.getSettings().streamAddons || [];
   if (!addons.length) throw new Error('No stream addons configured. Add your debrid-enabled addon URL in Settings.');
-  const results = await Promise.allSettled(addons.map((a) => fetchStreams(a, item.type, item.video_id)));
+  // A season numbered by year is asked for under its broadcast season and episode, which is how releases
+  // are named; if that finds nothing, under the year as well.
+  const alt = await broadcastId(item).catch((e) => { log.warn(`broadcast numbering for ${item.video_id}: ${e.message}`); return null; });
+  let results = await Promise.allSettled(addons.map((a) => fetchStreams(a, item.type, alt || item.video_id)));
+  if (alt && !results.some((r) => r.status === 'fulfilled' && r.value.length)) {
+    results = await Promise.allSettled(addons.map((a) => fetchStreams(a, item.type, item.video_id)));
+  }
   // If no addon answered at all, that's an outage, not "nothing available": don't cache it, and let
   // callers retry instead of skipping the episode.
   if (results.every((r) => r.status === 'rejected')) {
@@ -205,7 +212,7 @@ export async function findStreams(item, channel, { fresh = false } = {}) {
   const settings = store.getSettings();
   const candidates = rankStreams(streams, channel, settings.preferKeywords || [], settings.blockKeywords || []);
   const failed = results.filter((r) => r.status === 'rejected').length;
-  log.info(`streams for ${item.video_id}: ${streams.length + otherTitle} found, ${candidates.length} playable` +
+  log.info(`streams for ${item.video_id}${alt ? ` (asked as ${alt.split(':').slice(1).join(':')})` : ''}: ${streams.length + otherTitle} found, ${candidates.length} playable` +
     (otherTitle ? `, ${otherTitle} for another title` : '') +
     (candidates[0] ? `, best ${candidates[0].resolution || '?'}p` : '') + (failed ? ` (${failed} addon${failed > 1 ? 's' : ''} failed)` : ''));
   // An addon down and nothing usable from the rest is an outage, not "this title can't be played": retry later

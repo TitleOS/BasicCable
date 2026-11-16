@@ -130,10 +130,12 @@ Time slots:
 - Moving the guide never moves a weekly time slot. The programs before it move, and the last one runs up to the slot's start. If a program would run into a slot, the rest of that block is replanned.
 - Auto-fill programs never run into a slot. Leftover time at the end of a block goes to the previous program if it's under 10 minutes; otherwise something from the pool that fits fills it. An episode that has to be cut short airs again next time instead of being skipped.
 - Episode progress is kept per channel and per show, and shared between the pool and slots. Specials (season 0) and unreleased episodes are skipped.
+- Some shows have their seasons numbered by year in Cinemeta (American Pickers' "2019", episode 28), while releases are named by broadcast season ("S21E04") and stream addons find nothing under the year. For those, the episode is looked up on [TVmaze](https://www.tvmaze.com) by title (or else by air date) and the addons are asked under its broadcast season and episode; if that finds nothing, under the year as well.
 
 The no-repeat window:
 
 - The planner skips anything that aired in full, or is already planned, within the channel's window, counting both the history and the guide ahead. In-order shows move past such an episode; random ones pick another. The window runs from start time to start time. Editing the window rebuilds that channel's guide.
+- Outside the window, random shows still favour what hasn't aired lately: an episode not shown in the last 90 days comes first, and after that one from the quarter shown longest ago. A show goes through all of its episodes before any comes round again, instead of an episode from last week being as likely as one from last month.
 - The guide is planned two days ahead and then moves earlier as programs turn out shorter than planned, which can pull an episode a few hours inside the window. To catch that, each program's real time is checked again when its stream is prepared, about 10 minutes before it airs. If it would now be a rerun, the channel's usual rules put something else in its place.
 - A channel with less programming than its window can't avoid reruns (11 films is about 25 hours, against a 3-day window). It plays whatever aired longest ago, and everything comes round before anything repeats. The channel editor's Recently shown panel, and the MCP tool `basiccable_recently_shown`, tell you when that's happening. Add titles or shorten the window to change it.
 
@@ -285,7 +287,7 @@ Opening a channel would otherwise wait for every stream addon to answer and then
 2. It checks that the top file is reachable and real, not a debrid "downloading" placeholder.
 3. It keeps that choice for up to 2 hours.
 
-Opening the channel then starts ffmpeg right away, and the program's log line says `stream was prepared ahead`. In testing with addons that took 5 seconds to answer, tune-in went from 6.2 s to 1.0 s.
+Opening the channel then starts ffmpeg right away, and the program's log line says `stream was prepared ahead`. In testing with addons that took 5 seconds to answer, tune-in went from 6.2 s to 1.0 s. The playlist is handed to the player as soon as the first segment is written; the next ones follow within seconds, before the player asks again.
 
 Preparing a stream also reveals the file's real length, and the program's guide slot is set to match it. A Superfan episode gets its full extended length instead of being cut off, and a 21-minute file in a 25-minute slot hands the extra 4 minutes to the next program. Only programs that haven't started are changed. See [Scheduling details](#scheduling-details).
 
