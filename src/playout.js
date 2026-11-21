@@ -22,7 +22,11 @@ import { pickTrack, trackPath, trackLabel } from './music.js';
 // times before they had built up a cushion; ~30s is where they stopped. The playlist lists ~60s, so a player
 // that stalls carries on where it was instead of being pushed out of the window.
 const SEGMENT_SECONDS = 6;
-const WINDOW = 10; // segments listed in the live playlist
+// The window is counted in seconds as well as segments: re-encoded video comes in 2s segments, and 10 of those
+// (20s) let a player a few seconds behind fall out of the playlist and reopen the channel.
+const WINDOW = 10; // the live playlist lists at least this many segments...
+const WINDOW_SECONDS = 60; // ...and at least this much video
+const KEEP_BEHIND_SECONDS = 30; // segment files kept behind the window, for a player running a little late
 const PREROLL_SECONDS = 30; // how far ahead of the live position segments are published
 const EARLY_FAIL_SECONDS = 15; // ffmpeg dying before producing this much video means the file is the problem
 // A copied (not re-encoded) video can only be cut at its keyframes. Most files have one every 10s or less; some
@@ -771,9 +775,17 @@ export class ChannelRunner {
     });
   }
 
-  /** Delete segments that have scrolled out of the published window (the unpublished buffer is kept). */
+  /** Index of the first segment the live playlist lists, out of the first `published`: WINDOW and WINDOW_SECONDS. */
+  windowStart(published) {
+    let i = published;
+    for (let secs = 0; i > 0 && (published - i < WINDOW || secs < WINDOW_SECONDS);) secs += this.segments[--i].duration;
+    return i;
+  }
+
+  /** Delete segments well behind the published window (the unpublished buffer is kept). */
   pruneFiles() {
-    const cut = this.visibleCount() - WINDOW - 3;
+    let cut = this.windowStart(this.visibleCount());
+    for (let behind = 0, secs = 0; cut > 0 && (behind < 3 || secs < KEEP_BEHIND_SECONDS); behind++) secs += this.segments[--cut].duration;
     if (cut <= 0) return;
     for (const seg of this.segments.slice(0, cut)) this.deleteSegmentFiles(seg);
     // Drop bookkeeping for long-gone segments, but remember discontinuities for the sequence counter.
@@ -809,8 +821,9 @@ export class ChannelRunner {
    */
   playlist(kind = 'video') {
     const published = this.segments.slice(0, this.visibleCount());
-    const win = published.slice(-WINDOW);
-    const discBefore = (this.droppedDisc || 0) + published.slice(0, published.length - win.length).filter((s) => s.disc).length;
+    const start = this.windowStart(published.length);
+    const win = published.slice(start);
+    const discBefore = (this.droppedDisc || 0) + published.slice(0, start).filter((s) => s.disc).length;
     const target = this.maxTarget; // never shrinks: players expect it to stay put
     const out = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${target}`,
       `#EXT-X-MEDIA-SEQUENCE:${win[0]?.seq ?? 0}`, `#EXT-X-DISCONTINUITY-SEQUENCE:${discBefore}`];

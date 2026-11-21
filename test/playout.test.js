@@ -47,3 +47,34 @@ test('the timeline starts with the first segment, and 30s of video is published 
   const end = shown.at(-1).contentStart + shown.at(-1).duration;
   assert.ok(end >= 30 && end < 40, `published up to ${end}s of the 60s`);
 });
+
+test('the live playlist lists a minute of video even when segments are 2s, and keeps their files 30s behind it', async () => {
+  const { ChannelRunner } = await import('../src/playout.js');
+  const r = Object.create(ChannelRunner.prototype);
+  // 20 copied 6s segments, then a re-encoded part in 2s segments (as from a long-keyframe fallback or the Up next box).
+  const segments = [];
+  let t = 0;
+  for (let i = 0; i < 60; i++) {
+    const duration = i < 20 ? 6 : 2;
+    segments.push({ name: `p${i < 20 ? 1 : 2}_${String(i).padStart(5, '0')}.ts`, duration, program: i < 20 ? 1 : 2, index: i, seq: i, disc: i === 20, contentStart: t });
+    t += duration;
+  }
+  // Everything is published: the live position is 30s (the preroll) before the end.
+  Object.assign(r, { channelId: 0, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'st-window-')), segments, programs: new Map(), maxTarget: 6, visible: 0, timeBase: Date.now() - (t - 30) * 1000 });
+  assert.equal(r.visibleCount(), 60);
+  const listed = r.playlist().split('\n').filter((l) => l.startsWith('#EXTINF')).map((l) => Number(l.slice(8, -1)));
+  const listedSeconds = listed.reduce((a, b) => a + b, 0);
+  assert.ok(listedSeconds >= 60 && listedSeconds < 62, `lists ${listedSeconds}s, not 20s`);
+  assert.equal(listed.length, 30);
+  assert.match(r.playlist(), /#EXT-X-DISCONTINUITY-SEQUENCE:1\n/, 'the discontinuity before the window is counted');
+  r.pruneFiles();
+  const kept = segments.filter((s) => !s.deleted);
+  const keptSeconds = kept.reduce((a, s) => a + s.duration, 0);
+  assert.ok(keptSeconds >= 90 && keptSeconds < 96, `files kept for ${keptSeconds}s`);
+  // Long copied segments keep the old floor: 10 listed, 3 more kept.
+  const long = Array.from({ length: 30 }, (_, i) => ({ name: `p1_${i}.ts`, duration: 10, program: 1, index: i, seq: i, disc: false, contentStart: i * 10 }));
+  Object.assign(r, { segments: long, visible: 0, timeBase: Date.now() - (300 - 30) * 1000 });
+  assert.equal(r.playlist().split('\n').filter((l) => l.startsWith('#EXTINF')).length, 10);
+  r.pruneFiles();
+  assert.equal(long.filter((s) => !s.deleted).length, 13);
+});
