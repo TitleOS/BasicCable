@@ -44,6 +44,13 @@ export function subtitlePlan(subs, mode = 'auto') {
 }
 
 /**
+ * Whether a selectable track needs its own connection to the file. An MP4 can store its text track tens of MB
+ * away from the video playing at the same moment. Reading both over one connection makes ffmpeg seek back and
+ * forth over HTTP, and a seek can cost over a second, which held a 0.8 Mbit/s episode below real time.
+ */
+export const subtitlesOwnInput = (info, subs) => subs?.delivery === 'vtt' && /\b(?:mov|mp4)\b/.test(info?.container || '');
+
+/**
  * filter_complex that overlays an image subtitle track onto the video. The subtitle canvas is scaled to
  * the video width and bottom-aligned, which keeps captions in place on cropped (e.g. 2.39:1) encodes.
  * Output is capped at 1080p to keep the re-encode affordable.

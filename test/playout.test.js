@@ -78,3 +78,53 @@ test('the live playlist lists a minute of video even when segments are 2s, and k
   r.pruneFiles();
   assert.equal(long.filter((s) => !s.deleted).length, 13);
 });
+
+test('an MP4 reads its text subtitles over their own connection; other files and burned-in tracks do not', async () => {
+  const { ChannelRunner } = await import('../src/playout.js');
+  const r = Object.create(ChannelRunner.prototype);
+  r.capsBurst = true;
+  const cand = { url: 'https://debrid.example/file', headers: { Referer: 'https://example.test/' } };
+  const audio = [{ codec_name: 'aac', channels: 2, tags: { language: 'eng' } }];
+  const channel = { options: {} };
+  const inputs = (args) => args.filter((a) => a === '-i').length;
+  const vtt = { index: 2, delivery: 'vtt', stream: { codec_name: 'mov_text' } };
+  const mp4 = r.mainArgs(cand, { container: 'mov,mp4,m4a,3gp,3g2,mj2', audio, video: {} }, channel, 800, 120, vtt);
+  assert.equal(inputs(mp4), 2);
+  assert.equal(mp4.filter((a) => a === '-headers').length, 2, 'both connections send the headers');
+  assert.equal(mp4.filter((a) => a === '-ss').length, 2, 'both start at the same point');
+  assert.equal(mp4.filter((a) => a === '-readrate').length, 2, 'both are paced');
+  assert.ok(mp4.indexOf('-t') > mp4.lastIndexOf('-i'), 'the length is an output option');
+  assert.equal(mp4[mp4.indexOf('webvtt') - 2], '1:s:2');
+  assert.ok(mp4.includes('0:v:0') && mp4.includes('0:a:0'), 'picture and sound stay on the first connection');
+  const mkv = r.mainArgs(cand, { container: 'matroska,webm', audio, video: {} }, channel, 800, 120, { ...vtt, stream: { codec_name: 'subrip' } });
+  assert.equal(inputs(mkv), 1);
+  assert.equal(mkv[mkv.indexOf('webvtt') - 2], '0:s:2');
+  const unknown = r.mainArgs(cand, { audio, video: {} }, channel, 800, 120, vtt);
+  assert.equal(inputs(unknown), 1, 'a stream saved before the container was recorded');
+  const none = r.mainArgs(cand, { container: 'mov,mp4', audio, video: {} }, channel, 800, 120, null);
+  assert.equal(inputs(none), 1);
+});
+
+test('a channel falling behind real time is logged once a minute, with its speed, until it catches up', async (t) => {
+  const { ChannelRunner } = await import('../src/playout.js');
+  const { log } = await import('../src/config.js');
+  const warned = [], told = [];
+  t.mock.method(log, 'warn', (m) => warned.push(m));
+  t.mock.method(log, 'info', (m) => told.push(m));
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
+  const r = Object.create(ChannelRunner.prototype);
+  Object.assign(r, { channelId: 4, anchored: true, timeBase: 1_000_000, contentTotal: 10 });
+  r.noteLag('copying the video'); // 10s ahead
+  t.mock.timers.tick(11_000); r.noteLag('copying the video'); // 1s behind: within the margin
+  assert.equal(warned.length, 0);
+  t.mock.timers.tick(21_000); r.contentTotal = 25; r.noteLag('copying the video'); // 32s in, 25s made
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /channel 4: 7s behind real time, making video at 0\.47x \(copying the video\)/);
+  t.mock.timers.tick(30_000); r.contentTotal = 50; r.noteLag('copying the video');
+  assert.equal(warned.length, 1, 'not again within the minute');
+  t.mock.timers.tick(31_000); r.contentTotal = 75; r.noteLag('copying the video');
+  assert.equal(warned.length, 2);
+  r.contentTotal = 200; r.noteLag('copying the video');
+  assert.match(told.at(-1), /channel 4: back ahead of real time after 61s/);
+  assert.equal(r.lag, null);
+});

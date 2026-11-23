@@ -6,7 +6,7 @@ import { store } from './db.js';
 import { headerArgs } from './probe.js';
 import { prepareStream, dropPrepared, skipUnplayable, preparedFor, fitGuideToFile, seedPrepared } from './prefetch.js';
 import { buildChannel, itemLabel, retimeFrom } from './scheduler.js';
-import { subtitlePlan, burnFilter } from './subtitles.js';
+import { subtitlePlan, subtitlesOwnInput, burnFilter } from './subtitles.js';
 import { UP_NEXT_SECONDS, upNextFont, upNextText, upNextFilter } from './upnext.js';
 import { perBreak, clipsFor, pickBreak, readyFile } from './commercials.js';
 import { utilityOf, renderUtilityFrame } from './utilities.js';
@@ -32,6 +32,9 @@ const EARLY_FAIL_SECONDS = 15; // ffmpeg dying before producing this much video 
 // A copied (not re-encoded) video can only be cut at its keyframes. Most files have one every 10s or less; some
 // rips go 30s+ without one, and segments that long make players stall. Past this, the video gets re-encoded.
 const LONG_SEGMENT_SECONDS = 12;
+const LAG_WARN_SECONDS = 2; // this far behind real time, players are eating into their cushion: say so
+const LAG_LOG_MS = 60000; // and repeat it this often while it lasts
+const LAG_RATE_MS = 30000; // the production speed in those warnings is measured over about this long
 const longGop = new Map(); // stream url -> when it was found to need re-encoding (so a resume re-encodes too)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RETIME_MS = 3000; // a program starting this far off its guide time moves the guide
@@ -298,6 +301,7 @@ export class ChannelRunner {
     if (next) prepareStream(next, channel).catch(() => {});
 
     let transcode = false;
+    let noSubs = false; // the subtitles' own connection failed: play this stream without them
     for (let attempt = 0; prep && attempt < 6; attempt++) {
       if (this.stopped) return 'done';
       const { cand, info } = prep;
@@ -328,7 +332,8 @@ export class ChannelRunner {
         message: '',
       });
       const caps = await ffmpegCaps();
-      const subs = caps.subtitles ? subtitlePlan(info.subtitles, channel.options?.subtitles || 'auto') : null;
+      const subs = caps.subtitles && !noSubs ? subtitlePlan(info.subtitles, channel.options?.subtitles || 'auto') : null;
+      const ownSubs = subtitlesOwnInput(info, subs);
       if (!caps.subtitles && subtitlePlan(info.subtitles, channel.options?.subtitles || 'auto')) {
         log.warn(`channel ${channel.number}: skipping subtitles, ffmpeg ${caps.version} can't pace them in real time (use ffmpeg 7.x)`);
       }
@@ -353,7 +358,7 @@ export class ChannelRunner {
       const runLimit = upNext?.split ? upNext.from : limit;
       log.info(`channel ${channel.number}: ${resumeAt != null ? 'resuming' : 'playing'} ${itemLabel(item)} from ${Math.round(startAt)}s @ ${info.video?.height || '?'}p` +
         (transcode || overlay ? ', re-encoding video' : '') + (overlay ? `, "Up next" box${upNext.from > 0 ? ` from ${Math.round(startAt + upNext.from)}s` : ''}` : '') +
-        (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''})` : '') +
+        (subs ? `, subtitles ${subs.delivery === 'vtt' ? 'as a track' : 'burned in'} (${subs.stream.codec_name}${subs.sdh ? ', SDH' : ''}${ownSubs ? ', own connection' : ''})` : '') +
         (attempt === 0 ? (restored && prep.restored ? ', same stream as before the restart' : waited < 200 ? ', stream was prepared ahead' : `, stream picked in ${(waited / 1000).toFixed(1)}s`) : ''));
       if (this.skipRequested) {
         // Skipped while we were still getting the stream ready.
@@ -369,7 +374,8 @@ export class ChannelRunner {
       let produced;
       try {
         produced = await this.runFfmpeg(this.mainArgs(cand, info, channel, startAt, runLimit, subs, { transcode, burst, overlay }),
-          { vtt: subs?.delivery === 'vtt', maxSegment: copying ? LONG_SEGMENT_SECONDS : 0 });
+          { vtt: subs?.delivery === 'vtt', maxSegment: copying ? LONG_SEGMENT_SECONDS : 0,
+            mode: `${copying ? 'copying' : 're-encoding'} the video${subs?.delivery === 'vtt' ? `, subtitles ${ownSubs ? 'on their own connection' : 'in the same read'}` : ''}` });
       } finally {
         clearInterval(saver);
       }
@@ -409,6 +415,12 @@ export class ChannelRunner {
         this.resume = { itemId: item.id, at: startAt + produced.seconds };
         return 'retry';
       }
+      // A debrid service may refuse the second connection: the picture matters more than the captions.
+      if (ownSubs) {
+        noSubs = true;
+        log.warn(`channel ${channel.number}: ${itemLabel(item)} failed to start with subtitles on their own connection; playing it without them`);
+        continue;
+      }
       // Died right away: the file doesn't remux cleanly (odd codec/container) or the link is dead.
       if (!transcode && subs?.delivery !== 'burn') {
         transcode = true;
@@ -416,6 +428,7 @@ export class ChannelRunner {
         continue;
       }
       transcode = false;
+      noSubs = false;
       dropPrepared(item, channel, cand.url);
       prep = await prepare();
       if (prep === undefined) return 'failed';
@@ -610,15 +623,16 @@ export class ChannelRunner {
   mainArgs(cand, info, channel, offset, limit, subs, { transcode = false, burst = 20, overlay = null } = {}) {
     const opts = channel.options || {};
     const audioIdx = pickAudio(info.audio, opts.audioLanguage);
-    const args = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
-    args.push(...headerArgs(cand.headers));
+    const input = [...headerArgs(cand.headers)];
     // A read that hangs for 20s counts as a network error, so ffmpeg reconnects instead of waiting forever.
-    args.push('-rw_timeout', '20000000', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
+    input.push('-rw_timeout', '20000000', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
       '-reconnect_on_http_error', '5xx', '-reconnect_delay_max', '5');
-    if (offset > 1) args.push('-ss', offset.toFixed(2));
-    args.push('-readrate', '1');
-    if (this.capsBurst) args.push('-readrate_initial_burst', String(Math.round(burst)));
-    args.push('-i', cand.url, '-t', limit.toFixed(2));
+    if (offset > 1) input.push('-ss', offset.toFixed(2));
+    input.push('-readrate', '1');
+    if (this.capsBurst) input.push('-readrate_initial_burst', String(Math.round(burst)));
+    input.push('-i', cand.url);
+    const ownSubs = subtitlesOwnInput(info, subs);
+    const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', ...input, ...(ownSubs ? input : []), '-t', limit.toFixed(2)];
     if (subs?.delivery === 'burn') {
       // Image subtitles: overlay them and re-encode, with a keyframe every 2s so segments stay on size.
       const graph = burnFilter(info.video || {}, subs.stream, subs.index);
@@ -640,7 +654,7 @@ export class ChannelRunner {
       else args.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2');
     }
     // Text subtitles ride along as a WebVTT track, cut in step with the video segments.
-    if (subs?.delivery === 'vtt') args.push('-map', `0:s:${subs.index}`, '-c:s', 'webvtt');
+    if (subs?.delivery === 'vtt') args.push('-map', `${ownSubs ? 1 : 0}:s:${subs.index}`, '-c:s', 'webvtt');
     else args.push('-sn');
     args.push('-dn', '-max_muxing_queue_size', '2048');
     return args;
@@ -666,8 +680,9 @@ export class ChannelRunner {
   }
 
   /** Runs one ffmpeg program into its own HLS playlist and folds its segments into the channel playlist. */
-  runFfmpeg(inputArgs, { vtt = false, maxSegment = 0, env = null } = {}) {
+  runFfmpeg(inputArgs, { vtt = false, maxSegment = 0, env = null, mode = '' } = {}) {
     const n = ++this.program;
+    const spawnedAt = Date.now();
     // The trailing "_" matters: ffmpeg names WebVTT segments "<playlist name><index>.vtt", i.e. p3_0.vtt.
     const playlist = path.join(this.dir, `p${n}_.m3u8`);
     this.programs.set(n, { vtt });
@@ -726,6 +741,7 @@ export class ChannelRunner {
           if (!this.anchored) {
             this.anchored = true;
             this.timeBase = Date.now() - this.contentTotal * 1000;
+            log.info(`channel ${this.channelId}: first video ${((Date.now() - spawnedAt) / 1000).toFixed(1)}s after starting ffmpeg`);
           }
           this.segments.push({ ...seg, program: n, index, seq: this.nextSeq++, disc: firstOfProgram && this.segments.length > 0, contentStart: this.contentTotal });
           this.contentTotal += seg.duration;
@@ -743,6 +759,7 @@ export class ChannelRunner {
       let seenAtCheck = 0;
       const poll = setInterval(() => {
         ingest();
+        this.noteLag(mode);
         if (seen !== seenAtCheck) { seenAtCheck = seen; lastNew = Date.now(); return; }
         // Still on the same segment well past maxSegment while the source keeps flowing (not hung): the next
         // keyframe is too far off. Treat it like a long segment now rather than wait for the hang check.
@@ -773,6 +790,28 @@ export class ChannelRunner {
         resolve({ code, segments: seen, seconds, longSegment });
       });
     });
+  }
+
+  /** Log when video is being made slower than it's shown: players run out and stall, and nothing else says so. */
+  noteLag(mode = '') {
+    if (!this.anchored) return;
+    const now = Date.now();
+    const rate = this.lagRate ||= { at: now, content: this.contentTotal, prev: null };
+    if (now - rate.at >= LAG_RATE_MS) Object.assign(rate, { prev: { at: rate.at, content: rate.content }, at: now, content: this.contentTotal });
+    const lead = this.leadSeconds();
+    if (lead >= 0) {
+      if (this.lag) log.info(`channel ${this.channelId}: back ahead of real time after ${Math.round((now - this.lag.since) / 1000)}s`);
+      this.lag = null;
+      return;
+    }
+    if (!this.lag && lead > -LAG_WARN_SECONDS) return;
+    this.lag ||= { since: now, warned: 0 };
+    if (now - this.lag.warned < LAG_LOG_MS) return;
+    this.lag.warned = now;
+    const from = rate.prev || rate;
+    const seconds = (now - from.at) / 1000;
+    const speed = seconds >= 5 ? `making video at ${((this.contentTotal - from.content) / seconds).toFixed(2)}x` : 'speed not measured yet';
+    log.warn(`channel ${this.channelId}: ${Math.round(-lead)}s behind real time, ${speed}${mode ? ` (${mode})` : ''}`);
   }
 
   /** Index of the first segment the live playlist lists, out of the first `published`: WINDOW and WINDOW_SECONDS. */
