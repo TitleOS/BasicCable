@@ -111,6 +111,36 @@ export function isUnplayable(videoId) {
   return !!until && until >= Date.now();
 }
 
+/**
+ * The part number in an episode title: "Broken Bow (1)", "Apprentice (Part 2)", "Graduation, Part 1". Roman
+ * numerals ("Part IV") are left alone: shows that number every episode that way aren't two-parters.
+ */
+export function partNumber(title) {
+  const m = /(?:\(\s*(?:part\s*)?(\d{1,2})\s*\)|(?:^|[\s,:–—-])part\s+(\d{1,2}))\s*$/i.exec(String(title || ''));
+  return m ? Number(m[1] || m[2]) : null;
+}
+
+/**
+ * Multi-part stories in a show's episode list: each part's next part (by video id) and the set of parts that
+ * follow another. Part n+1 is the very next episode, so parts with different names ("Aliens of London (1)",
+ * "World War Three (2)") and parts across a season break ("Who Shot Mr. Burns? (1)" ends a season) still link.
+ */
+const partsCache = new WeakMap();
+export function partLinks(episodes) {
+  let links = partsCache.get(episodes);
+  if (links) return links;
+  links = { next: new Map(), later: new Set() };
+  for (let i = 0; i + 1 < episodes.length; i++) {
+    const n = partNumber(episodes[i].title);
+    if (n != null && partNumber(episodes[i + 1].title) === n + 1) {
+      links.next.set(episodes[i].id, episodes[i + 1]);
+      links.later.add(episodes[i + 1].id);
+    }
+  }
+  partsCache.set(episodes, links);
+  return links;
+}
+
 function roundUp(minutes, step) {
   if (!step || step <= 1) return minutes;
   return Math.ceil(minutes / step) * step;
@@ -171,9 +201,12 @@ class Planner {
    */
   nextEpisode(entry, order, at) {
     const eps = entry.episodes;
+    // With parts kept together, part 2 onwards only airs straight after the part before it (see continuation).
+    const later = this.channel.options?.keepPartsTogether ? partLinks(eps).later : null;
+    const skip = (id) => this.blocked(id) || !!later?.has(id);
     let ok;
     if (order === 'random') {
-      ok = eps.filter((e) => !this.blocked(e.id));
+      ok = eps.filter((e) => !skip(e.id));
       const fresh = ok.filter((e) => !this.isRepeat(e.id, at));
       if (fresh.length) return { ep: this.leastRecent(fresh), repeat: false };
     } else {
@@ -182,7 +215,7 @@ class Planner {
       ok = [];
       for (let i = 1; i <= eps.length; i++) {
         const ep = eps[(idx + i) % eps.length];
-        if (this.blocked(ep.id)) continue;
+        if (skip(ep.id)) continue;
         if (!this.isRepeat(ep.id, at)) return { ep, repeat: false };
         ok.push(ep);
       }
@@ -202,10 +235,27 @@ class Planner {
     return { entry, video: null, duration: this.durationOf(entry), repeat: this.isRepeat(entry.id, at), lastShown: this.shown.get(entry.id) ?? 0 };
   }
 
+  /**
+   * With parts kept together: the next part of a story whose previous part was just planned (or is the last
+   * saved row), if its show is among `entries`. It airs even inside the no-repeat window; a part cut off by a
+   * time slot airs again in full later, so nothing follows it.
+   */
+  continuation(entries) {
+    if (!this.channel.options?.keepPartsTogether) return null;
+    const prev = this.previousRow();
+    if (!prev || prev.type !== 'series' || prev.truncated) return null;
+    const entry = entries.find((e) => e.id === prev.meta_id);
+    const ep = entry?.episodes && partLinks(entry.episodes).next.get(prev.video_id);
+    if (!ep || this.blocked(ep.id)) return null;
+    return { entry, video: ep, duration: this.durationOf(entry), repeat: false, lastShown: this.shown.get(ep.id) ?? 0 };
+  }
+
   /** Choose from several titles to start at `at`. mode: shuffle | sequential | random */
   pickFrom(titles, mode, remaining, poolKey, at) {
     const entries = titles.map((t) => this.lib.get(t.id)).filter(Boolean);
     if (!entries.length) return null;
+    const part = this.continuation(entries);
+    if (part) return part;
     let ordered;
     if (mode === 'sequential') {
       const lastId = this.cursors[poolKey];

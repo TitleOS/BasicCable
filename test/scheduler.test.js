@@ -441,3 +441,84 @@ test('a lineup shorter than the window is left alone (nothing fresher to swap in
   assert.equal(await avoidRepeat(item, store.getChannel(ch.id)), null);
   assert.ok(store.epgRange(ch.id, now, Infinity).length >= rows.length, 'guide still full');
 });
+
+test('part numbers come from "(1)", "(Part 2)" and ", Part 1" endings, not roman numerals or other words', async () => {
+  const { partNumber, partLinks } = await import('../src/scheduler.js');
+  assert.equal(partNumber('Broken Bow (1)'), 1);
+  assert.equal(partNumber('Who Shot Mr. Burns? (2)'), 2);
+  assert.equal(partNumber('Apprentice (Part 2)'), 2);
+  assert.equal(partNumber('Graduation, Part 1'), 1);
+  assert.equal(partNumber('Part IV'), null);
+  assert.equal(partNumber("'Til Death Do Us Part"), null);
+  assert.equal(partNumber('Chapter 15: The Believer'), null);
+  assert.equal(partNumber('Catch-22'), null);
+  // Parts link to the very next episode when it carries the next number, whatever it's called.
+  const eps = [
+    { id: 'a', title: 'Aliens of London (1)' }, { id: 'b', title: 'World War Three (2)' },
+    { id: 'c', title: 'Dalek' }, { id: 'd', title: 'Lone (2)' }, { id: 'e', title: 'Arc (1)' }, { id: 'f', title: 'Arc (1)' },
+  ];
+  const links = partLinks(eps);
+  assert.deepEqual([...links.next].map(([k, v]) => [k, v.id]), [['a', 'b']]);
+  assert.deepEqual([...links.later], ['b']);
+});
+
+function seedParts(id, name) {
+  const titles = { 5: 'Rising (1)', 6: 'Shadow (2)', 7: 'Destroy (3)', 12: 'Finale, Part 1', 13: 'Finale, Part 2', 20: 'Lone (2)' };
+  const videos = Array.from({ length: 30 }, (_, i) => ({ id: `${id}:1:${i + 1}`, season: 1, episode: i + 1, title: titles[i + 1] || `${name} ${i + 1}`, released: '2010-01-01T00:00:00Z' }));
+  store.cacheSet(`meta:series:${id}`, { id, type: 'series', name, poster: '', background: '', description: '', runtime: 22, videos });
+}
+
+/** Every later part airs straight after the part before it, and every first part is followed by the next. */
+function assertPartsTogether(rows, id) {
+  const ep = (r) => (r?.meta_id === id ? Number(r.video_id.split(':')[2]) : null);
+  const chains = { 6: 5, 7: 6, 13: 12 };
+  rows.forEach((r, i) => {
+    const e = ep(r);
+    if (chains[e]) assert.equal(ep(rows[i - 1]), chains[e], `episode ${e} at row ${i} follows ${ep(rows[i - 1])}`);
+    const next = Object.keys(chains).find((k) => chains[k] === e);
+    if (next && i + 1 < rows.length) assert.equal(ep(rows[i + 1]), Number(next), `episode ${e} at row ${i} is followed by part ${next}`);
+  });
+}
+
+test('with parts kept together, random episodes play each multi-part story back to back and in order', async () => {
+  seedParts('tt090', 'Arcs');
+  const ch = store.createChannel({ name: 'Parts Random', round_minutes: 5, fill_mode: 'random', options: { noRepeatDays: 0, keepPartsTogether: true } });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt090', name: 'Arcs' });
+  const now = Date.now();
+  await buildChannel(ch.id, { now });
+  const rows = store.epgRange(ch.id, now - HOUR, Infinity);
+  assert.ok(rows.length > 60, `planned ${rows.length}`);
+  assertPartsTogether(rows, 'tt090');
+  const eps = rows.map((r) => Number(r.video_id.split(':')[2]));
+  assert.ok(eps.includes(5) && eps.includes(12), 'the stories do get picked');
+  assert.ok(eps.includes(20), 'a "(2)" with no part 1 before it plays on its own');
+});
+
+test('with parts kept together, shuffled shows still play the next part straight after, and an extended guide continues the story', async () => {
+  seedParts('tt091', 'Arcs Two');
+  const ch = store.createChannel({ name: 'Parts Shuffle', round_minutes: 5, fill_mode: 'shuffle', options: { noRepeatDays: 0, keepPartsTogether: true } });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt091', name: 'Arcs Two' });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt001', name: 'Sitcom' });
+  const now = Date.now();
+  await buildChannel(ch.id, { now });
+  let rows = store.epgRange(ch.id, now - HOUR, Infinity);
+  assertPartsTogether(rows, 'tt091');
+  // Cut the guide right after a part 1, as the planning horizon can, then extend it: part 2 comes next.
+  const part1 = rows.find((r) => r.video_id === 'tt091:1:5');
+  assert.ok(part1, 'part 1 planned');
+  store.run('DELETE FROM epg WHERE channel_id = ? AND start > ?', ch.id, part1.start);
+  await buildChannel(ch.id, { now });
+  rows = store.epgRange(ch.id, part1.start, Infinity);
+  assert.deepEqual(rows.slice(0, 3).map((r) => r.video_id), ['tt091:1:5', 'tt091:1:6', 'tt091:1:7']);
+});
+
+test('without the option, later parts are ordinary episodes', async () => {
+  seedParts('tt092', 'Arcs Off');
+  const ch = store.createChannel({ name: 'Parts Off', round_minutes: 5, fill_mode: 'random', options: { noRepeatDays: 0 } });
+  store.addSource(ch.id, { kind: 'series', ref: 'tt092', name: 'Arcs Off' });
+  const now = Date.now();
+  await buildChannel(ch.id, { now });
+  const rows = store.epgRange(ch.id, now - HOUR, Infinity);
+  const eps = rows.map((r) => Number(r.video_id.split(':')[2]));
+  assert.ok(eps.includes(6) && eps.includes(13), 'later parts get picked on their own');
+});

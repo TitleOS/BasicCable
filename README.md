@@ -19,6 +19,7 @@ Each channel has a guide that runs on the real clock. Open a channel in Stremio 
 - **Preferred and blocked words**: a release with a preferred word in its name wins over everything else, resolution included. The default is `Superfan`, so The Office plays its extended episodes when an addon has them. Blocked words rule a release out on every channel; the defaults are `YIFY` and `YTS`, whose small re-encodes look soft on a big screen.
 - **HDR**: *Prefer HDR* picks HDR10, HDR10+ or HLG over SDR, and *Prefer HDR10* puts HDR10/HDR10+ first. Neither one gives up resolution for HDR. With *Avoid Dolby Vision-only releases* ticked, a Dolby Vision file without an HDR10 layer doesn't count as HDR.
 - **No-repeat window**: a channel won't air the same episode or movie again within 3 days, or whatever window you set. Each channel keeps 90 days of history, shown in the channel editor. If every choice is a repeat (a small pool), the one shown longest ago plays. Episodes that were cut short don't count.
+- **Two-part episodes together**: optionally, multi-part stories air back to back and in order, even on channels with shuffled or random episodes. See [Two-part episodes](#two-part-episodes).
 - **Commercial breaks**: upload your own old commercials, bumpers and promos into bundles ("2000s Kids", "Adult Swim Bumps") and play 1–3 of them between programs. See [Commercials](#commercials).
 - **"Up next" box**: optionally, during a program's last minute, a box in the corner shows the next two programs. See [Up next box](#up-next-box).
 - **Weather, news and sports channels**: generated channels with the forecast for your zip code over classical music; the latest headlines from AP, NPR, PBS and your own RSS feeds scrolling over Bing's picture of the day, with jazz; and scorecards for your state's pro and college teams, with LIVE scores and the over-the-air channel carrying each game. See [Utility channels](#utility-channels).
@@ -140,6 +141,17 @@ The no-repeat window:
 - A channel with less programming than its window can't avoid reruns (11 films is about 25 hours, against a 3-day window). It plays whatever aired longest ago, and everything comes round before anything repeats. The channel editor's Recently shown panel, and the MCP tool `basiccable_recently_shown`, tell you when that's happening. Add titles or shorten the window to change it.
 
 Editing a channel replans everything after the program that's on now. The program on air keeps playing.
+
+### Two-part episodes
+
+With **Keep two-part episodes together** ticked on a channel (MCP: `keep_parts_together`), a story told over several episodes airs in one go:
+
+- Parts are found by their Cinemeta titles. A title ending in `(1)`, `(2)`..., `(Part 1)` or `, Part 1` is a part, and it's linked to the next episode in the show when that one carries the next number. Parts don't need the same name or season: *Aliens of London (1)* is followed by *World War Three (2)*, and *Who Shot Mr. Burns? (1)* ends one season with part 2 opening the next. Roman numerals (*Part IV*) don't count, because some shows number every episode that way.
+- Random and shuffled channels start a story at its first part, and its other parts follow straight after, before the channel goes back to its usual order. A part 2 with no part 1 before it is an ordinary episode.
+- Later parts air even inside the no-repeat window, since part 1 was just picked under it. A part cut off by a time slot airs again in full later, and the rest of its story waits for it.
+- Some shows have long stories. *Star Wars: The Clone Wars* numbers most episodes as parts of 2- to 5-episode arcs, so a channel full of it gets runs of an hour or two of one arc.
+
+Turning it on or off replans that channel's guide.
 
 ## Subtitles
 

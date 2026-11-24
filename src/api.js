@@ -49,6 +49,8 @@ function channelInput(b, partial = false) {
       // Days before an episode or movie may air again on this channel (0 = no limit).
       noRepeatDays: o.noRepeatDays === undefined || o.noRepeatDays === '' ? 3 : Math.min(60, Math.max(0, Number(o.noRepeatDays) || 0)),
       includeSpecials: !!o.includeSpecials,
+      // Multi-part episodes ("(1)", "(2)"...) air back to back and in order, whatever the fill order.
+      keepPartsTogether: !!o.keepPartsTogether,
       // An "Up next" box over the last minute of each program (that minute is re-encoded to draw it).
       upNextOverlay: !!o.upNextOverlay,
       // Commercial breaks between programs: how many clips (0 = off) and from which bundles (none picked = all).
@@ -253,6 +255,7 @@ async function updateChannelOp(cur, b) {
   const c = store.updateChannel(cur.id, channelInput(b, true));
   const scheduleChanged = ['fill_mode', 'round_minutes'].some((k) => b[k] !== undefined && b[k] !== cur[k]) ||
     (b.options && !!b.options.includeSpecials !== !!cur.options.includeSpecials) ||
+    !!c.options?.keepPartsTogether !== !!cur.options?.keepPartsTogether ||
     noRepeatDays(c) !== noRepeatDays(cur) ||
     ads.breakAllowance(c) !== ads.breakAllowance(cur); // breaks need more (or less) room after each program
   if (b.resolution !== undefined || b.options || b.fallback !== undefined) {
